@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Đồng hồ kim - JS thuần</title>
+  <style>
+    body {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+      background: #f0f0f0;
+    }
+    canvas {
+      border: 2px solid #333;
+      border-radius: 50%;
+      background: white;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="clock" width="400" height="400"></canvas>
+
+  <script>
+    const canvas = document.getElementById('clock');
+    const ctx = canvas.getContext('2d');
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+    const radius = Math.min(centerX, centerY) - 10;
+
+    function drawClock() {
+      // Xóa canvas
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Vẽ vòng tròn đồng hồ
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+      ctx.strokeStyle = '#333';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Vẽ các vạch chia (12 vạch chính)
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = '16px Arial';
+      for (let i = 0; i < 12; i++) {
+        const angle = (i * Math.PI) / 6; // 360° / 12 = 30° = π/6 rad
+        const cos = Math.cos(angle);
+        const sin = Math.sin(angle);
+
+        // Vạch ngoài
+        ctx.beginPath();
+        ctx.moveTo(centerX + cos * (radius - 10), centerY + sin * (radius - 10));
+        ctx.lineTo(centerX + cos * (radius - 25), centerY + sin * (radius - 25));
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Số
+        ctx.fillText(
+          String(i === 0 ? 12 : i),
+          centerX + cos * (radius - 40),
+          centerY + sin * (radius - 40)
+        );
+      }
+
+      // Lấy thời gian hiện tại
+      const now = new Date();
+      let hour = now.getHours() % 12;
+      let minute = now.getMinutes();
+      let second = now.getSeconds();
+      let millisecond = now.getMilliseconds();
+
+      // Vẽ kim GIỜ
+      const hourAngle = (hour * Math.PI) / 6 + (minute * Math.PI) / (6 * 60); // + hiệu chỉnh theo phút
+      drawHand(hourAngle, radius * 0.5, 6, '#333');
+
+      // Vẽ kim PHÚT
+      const minuteAngle = (minute * Math.PI) / 30 + (second * Math.PI) / (30 * 60); // + hiệu chỉnh theo giây
+      drawHand(minuteAngle, radius * 0.7, 4, '#555');
+
+      // Vẽ kim GIÂY
+      const secondAngle = (second * Math.PI) / 30 + (millisecond * Math.PI) / (30 * 1000);
+      drawHand(secondAngle, radius * 0.8, 2, '#d00');
+
+      // Vẽ chấm tròn ở tâm
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, 6, 0, Math.PI * 2);
+      ctx.fillStyle = '#fff';
+      ctx.fill();
+      ctx.strokeStyle = '#333';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    function drawHand(angle, length, width, color) {
+      const endX = centerX + Math.sin(angle) * length;
+      const endY = centerY - Math.cos(angle) * length; // Trừ vì trục Y hướng xuống
+
+      ctx.beginPath();
+      ctx.moveTo(centerX, centerY);
+      ctx.lineTo(endX, endY);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+    }
+
+    // Cập nhật đồng hồ mỗi 40ms (~25 FPS) để mượt hơn (giây mượt nhờ millisecond)
+    setInterval(drawClock, 40);
+  </script>
+</body>
+</html>

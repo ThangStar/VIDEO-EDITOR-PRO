@@ -1,0 +1,41 @@
+{
+  "Version": 1,
+  "WorkspaceRootPath": "D:\\ts-ws\\CapCutClone\\",
+  "Documents": [
+    {
+      "AbsoluteMoniker": "D:0:0:{8569FBE8-3AFC-4DDE-B53E-44F8F9EB7CF1}|CapCutClone\\CapCutClone.vcxproj|D:\\ts-ws\\CapCutClone\\CapCutClone\\CapCutClone.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{8569FBE8-3AFC-4DDE-B53E-44F8F9EB7CF1}|CapCutClone\\CapCutClone.vcxproj|solutionrelative:CapCutClone\\CapCutClone.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    }
+  ],
+  "DocumentGroupContainers": [
+    {
+      "Orientation": 0,
+      "VerticalTabListWidth": 256,
+      "DocumentGroups": [
+        {
+          "DockedWidth": 200,
+          "SelectedChildIndex": 1,
+          "Children": [
+            {
+              "$type": "Bookmark",
+              "Name": "ST:0:0:{cce594b6-0c39-4442-ba28-10c64ac7e89f}"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "CapCutClone.cpp",
+              "DocumentMoniker": "D:\\ts-ws\\CapCutClone\\CapCutClone\\CapCutClone.cpp",
+              "RelativeDocumentMoniker": "CapCutClone\\CapCutClone.cpp",
+              "ToolTip": "D:\\ts-ws\\CapCutClone\\CapCutClone\\CapCutClone.cpp",
+              "RelativeToolTip": "CapCutClone\\CapCutClone.cpp",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAsAAAAUAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",
+              "WhenOpened": "2025-12-30T02:45:10.513Z",
+              "EditorCaption": ""
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
