@@ -123,7 +123,7 @@ void ExportManager::ExportThreadFunc(std::string outputFile, int width, int heig
               renderer = new TextureRenderer();
               if (renderer->Initialize()) {
                  renderer->CreateFramebuffer(width, height);
-                 renderer->SetFlipY(true); // Flip for correct export orientation
+                 renderer->SetFlipY(false); // Disable flip to fix vertical orientation issue
                  
                  renderer->SetFilterParams(m_EffectParams.brightness, m_EffectParams.contrast, m_EffectParams.saturation);
                  renderer->SetEffectParams(m_EffectParams.vignette, m_EffectParams.grain, m_EffectParams.aberration, m_EffectParams.sepia);
@@ -190,14 +190,21 @@ void ExportManager::ExportThreadFunc(std::string outputFile, int width, int heig
             
             if (tempPlayer.IsLoaded()) {
                 double localTime = currentClip->ToLocalTime(currentTime);
-                double playerCurrentTime = tempPlayer.GetCurrentTime();
-                double expectedNextTime = playerCurrentTime + (1.0 / (tempPlayer.GetFPS() > 0 ? tempPlayer.GetFPS() : 30.0));
                 
-                if (i == 0 || currentClip->filepath != currentLoadedFile || std::abs(localTime - expectedNextTime) > 0.1) {
+                double videoFPS = tempPlayer.GetFPS() > 0 ? tempPlayer.GetFPS() : 30.0;
+                double videoFrameDuration = 1.0 / videoFPS;
+                
+                // Only seek if we have a large discontinuity (scene change or scrub)
+                if (i == 0 || currentClip->filepath != currentLoadedFile || std::abs(localTime - tempPlayer.GetCurrentTime()) > 0.5) {
                     tempPlayer.Seek(localTime, false);
                 }
                 
-                tempPlayer.DecodeNextFrame();
+                // Sync Logic: Check if we need a new frame
+                // Ensure frame pacing is correct for export framerate
+                // We only decode if the START of the current video frame is too old for the target time
+                while (tempPlayer.GetCurrentTime() + videoFrameDuration < localTime) {
+                     if (!tempPlayer.DecodeNextFrame()) break;
+                }
                 const uint8_t* data = tempPlayer.GetFrameData(); 
                 
                 if (data && renderer) {
