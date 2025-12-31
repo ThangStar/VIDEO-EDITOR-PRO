@@ -139,6 +139,11 @@ bool Application::InitializeGLFW() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    
+    // Maximize window by default
+    glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
+    // Disable standard decorations for custom look
+    glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
 
     // Create window
     m_Window = glfwCreateWindow(m_Width, m_Height, m_Title.c_str(), nullptr, nullptr);
@@ -177,83 +182,106 @@ bool Application::InitializeImGui() {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     // io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; 
 
+    // Load Fonts - We need a good main font and the icon font
+    io.Fonts->AddFontDefault();
+    
+    // Load Icon Font (Merge into default)
+    static const ImWchar icons_ranges[] = { 0xf000, 0xf8ff, 0 }; // FontAwesome range
+    ImFontConfig icons_config; 
+    icons_config.MergeMode = true; 
+    icons_config.PixelSnapH = true;
+    
+    // Attempt to load FontAwesome. Make sure the path is correct relative to execution or absolute.
+    // Assuming assets are next to exe or in project root. Trying project root first since prompt implies dev environment.
+    // Ideally we use a relative path like "./Assets/Fonts/..."
+    io.Fonts->AddFontFromFileTTF("d:\\ts-ws\\CapCutClone\\CapCutClone\\Assets\\Fonts\\fa-solid-900.ttf", 16.0f, &icons_config, icons_ranges);
+    
+    // Load separate high-res font for sidebar icons
+    ImFontConfig large_icons_config; 
+    large_icons_config.PixelSnapH = true;
+    io.Fonts->AddFontFromFileTTF("d:\\ts-ws\\CapCutClone\\CapCutClone\\Assets\\Fonts\\fa-solid-900.ttf", 24.0f, &large_icons_config, icons_ranges);
+
     // Setup Dear ImGui style
     ImGui::StyleColorsDark();
     ImGuiStyle& style = ImGui::GetStyle();
     
-    // CapCut Theme Palette
-    ImVec4 bgDark       = ImVec4(0.11f, 0.11f, 0.12f, 1.00f); // #1D1D1F
-    ImVec4 bgPanel      = ImVec4(0.15f, 0.15f, 0.16f, 1.00f); // #252528
-    ImVec4 bgInput      = ImVec4(0.20f, 0.20f, 0.21f, 1.00f); // #333335
-    ImVec4 border       = ImVec4(0.25f, 0.25f, 0.26f, 1.00f); // #444444
-    ImVec4 accent       = ImVec4(0.00f, 0.78f, 0.84f, 1.00f); // #00C8D6 (Teal/Cyan)
-    ImVec4 accentHover  = ImVec4(0.00f, 0.85f, 0.90f, 1.00f);
-    ImVec4 accentActive = ImVec4(0.00f, 0.65f, 0.70f, 1.00f);
+    // CapCut Theme Palette (Refined)
+    ImVec4 bgMain       = ImVec4(0.08f, 0.08f, 0.08f, 1.00f); // #141414 (Very dark background)
+    ImVec4 bgPanel      = ImVec4(0.12f, 0.12f, 0.12f, 1.00f); // #1f1f1f (Panel background)
+    ImVec4 bgInput      = ImVec4(0.16f, 0.16f, 0.16f, 1.00f); // #292929 (Input fields)
+    ImVec4 border       = ImVec4(0.24f, 0.24f, 0.24f, 1.00f); // #3d3d3d (Borders)
+    
+    ImVec4 accent       = ImVec4(0.00f, 0.88f, 0.90f, 1.00f); // #00E0E6 (Bright Cyan/Teal)
+    ImVec4 accentHover  = ImVec4(0.20f, 0.92f, 0.94f, 1.00f);
+    ImVec4 accentActive = ImVec4(0.00f, 0.70f, 0.72f, 1.00f);
+    
     ImVec4 textMain     = ImVec4(0.95f, 0.95f, 0.95f, 1.00f);
     ImVec4 textDim      = ImVec4(0.60f, 0.60f, 0.60f, 1.00f);
+    ImVec4 textDisabled = ImVec4(0.40f, 0.40f, 0.40f, 1.00f);
 
     ImVec4* colors = style.Colors;
     colors[ImGuiCol_Text]                   = textMain;
-    colors[ImGuiCol_TextDisabled]           = textDim;
-    colors[ImGuiCol_WindowBg]               = bgDark;
+    colors[ImGuiCol_TextDisabled]           = textDisabled;
+    colors[ImGuiCol_WindowBg]               = bgMain;
     colors[ImGuiCol_ChildBg]                = bgPanel;
     colors[ImGuiCol_PopupBg]                = bgInput;
     colors[ImGuiCol_Border]                 = border;
-    colors[ImGuiCol_BorderShadow]           = ImVec4(0.00f, 0.00f, 0.00f, 0.20f);
+    colors[ImGuiCol_BorderShadow]           = ImVec4(0.00f, 0.00f, 0.00f, 0.30f);
     colors[ImGuiCol_FrameBg]                = bgInput;
-    colors[ImGuiCol_FrameBgHovered]         = ImVec4(0.25f, 0.25f, 0.26f, 1.00f);
-    colors[ImGuiCol_FrameBgActive]          = ImVec4(0.28f, 0.28f, 0.29f, 1.00f);
-    colors[ImGuiCol_TitleBg]                = bgDark;
-    colors[ImGuiCol_TitleBgActive]          = bgDark;
-    colors[ImGuiCol_TitleBgCollapsed]       = bgDark;
-    colors[ImGuiCol_MenuBarBg]              = bgDark;
-    colors[ImGuiCol_ScrollbarBg]            = bgDark;
+    colors[ImGuiCol_FrameBgHovered]         = ImVec4(0.22f, 0.22f, 0.22f, 1.00f);
+    colors[ImGuiCol_FrameBgActive]          = ImVec4(0.26f, 0.26f, 0.26f, 1.00f);
+    colors[ImGuiCol_TitleBg]                = bgPanel;
+    colors[ImGuiCol_TitleBgActive]          = bgPanel;
+    colors[ImGuiCol_TitleBgCollapsed]       = bgPanel;
+    colors[ImGuiCol_MenuBarBg]              = bgPanel;
+    colors[ImGuiCol_ScrollbarBg]            = bgMain;
     colors[ImGuiCol_ScrollbarGrab]          = ImVec4(0.30f, 0.30f, 0.30f, 1.00f);
     colors[ImGuiCol_ScrollbarGrabHovered]   = ImVec4(0.40f, 0.40f, 0.40f, 1.00f);
     colors[ImGuiCol_ScrollbarGrabActive]    = ImVec4(0.50f, 0.50f, 0.50f, 1.00f);
     colors[ImGuiCol_CheckMark]              = accent;
-    colors[ImGuiCol_SliderGrab]             = ImVec4(0.50f, 0.50f, 0.50f, 1.00f); // Circle Style?
+    colors[ImGuiCol_SliderGrab]             = ImVec4(0.60f, 0.60f, 0.60f, 1.00f); 
     colors[ImGuiCol_SliderGrabActive]       = accent;
-    colors[ImGuiCol_Button]                 = bgInput;
-    colors[ImGuiCol_ButtonHovered]          = ImVec4(0.25f, 0.25f, 0.26f, 1.00f);
-    colors[ImGuiCol_ButtonActive]           = ImVec4(0.18f, 0.18f, 0.19f, 1.00f);
-    colors[ImGuiCol_Header]                 = ImVec4(0.20f, 0.20f, 0.20f, 0.00f); // Transparent headers unless hovered
-    colors[ImGuiCol_HeaderHovered]          = ImVec4(0.25f, 0.25f, 0.26f, 1.00f);
-    colors[ImGuiCol_HeaderActive]           = ImVec4(0.28f, 0.28f, 0.29f, 1.00f);
+    colors[ImGuiCol_Button]                 = ImVec4(0.00f, 0.00f, 0.00f, 0.00f); // Transparent buttons by default for toolbar look
+    colors[ImGuiCol_ButtonHovered]          = ImVec4(1.00f, 1.00f, 1.00f, 0.05f);
+    colors[ImGuiCol_ButtonActive]           = ImVec4(1.00f, 1.00f, 1.00f, 0.10f);
+    colors[ImGuiCol_Header]                 = ImVec4(1.00f, 1.00f, 1.00f, 0.05f); 
+    colors[ImGuiCol_HeaderHovered]          = ImVec4(1.00f, 1.00f, 1.00f, 0.10f);
+    colors[ImGuiCol_HeaderActive]           = ImVec4(1.00f, 1.00f, 1.00f, 0.15f);
     colors[ImGuiCol_Separator]              = border;
     colors[ImGuiCol_SeparatorHovered]       = accent;
     colors[ImGuiCol_SeparatorActive]        = accent;
     colors[ImGuiCol_ResizeGrip]             = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
     colors[ImGuiCol_ResizeGripHovered]      = border;
     colors[ImGuiCol_ResizeGripActive]       = border;
-    colors[ImGuiCol_Tab]                    = bgDark;
-    colors[ImGuiCol_TabHovered]             = bgPanel;
-    colors[ImGuiCol_TabActive]              = bgPanel;
-    colors[ImGuiCol_TabUnfocused]           = bgDark;
+    colors[ImGuiCol_Tab]                    = bgPanel;
+    colors[ImGuiCol_TabHovered]             = ImVec4(0.20f, 0.20f, 0.20f, 1.00f);
+    colors[ImGuiCol_TabActive]              = ImVec4(0.20f, 0.20f, 0.20f, 1.00f); // Active tab slightly lighter
+    colors[ImGuiCol_TabUnfocused]           = bgPanel;
     colors[ImGuiCol_TabUnfocusedActive]     = bgPanel;
+    colors[ImGuiCol_TextSelectedBg]         = ImVec4(0.00f, 0.78f, 0.84f, 0.35f);
 
     // Styling Metrics
-    style.WindowPadding     = ImVec2(10.0f, 10.0f);
+    style.WindowPadding     = ImVec2(8.0f, 8.0f);
     style.FramePadding      = ImVec2(8.0f, 6.0f);
     style.CellPadding       = ImVec2(6.0f, 6.0f);
-    style.ItemSpacing       = ImVec2(10.0f, 10.0f);
+    style.ItemSpacing       = ImVec2(8.0f, 8.0f);
     style.ItemInnerSpacing  = ImVec2(6.0f, 6.0f);
     style.IndentSpacing     = 20.0f;
     style.ScrollbarSize     = 10.0f;
     style.GrabMinSize       = 12.0f;
 
-    // Rounding - Soft, modern look
-    style.WindowRounding    = 8.0f;
-    style.ChildRounding     = 6.0f;
-    style.FrameRounding     = 6.0f;
-    style.PopupRounding     = 6.0f;
+    // Rounding
+    style.WindowRounding    = 4.0f;
+    style.ChildRounding     = 4.0f;
+    style.FrameRounding     = 4.0f;
+    style.PopupRounding     = 4.0f;
     style.ScrollbarRounding = 12.0f;
-    style.GrabRounding      = 6.0f;
-    style.TabRounding       = 6.0f;
+    style.GrabRounding      = 12.0f; // Circle controls
+    style.TabRounding       = 4.0f;
     
-    // Thickness
-    style.WindowBorderSize  = 0.0f; // Minimalist, no borders
-    style.FrameBorderSize   = 0.0f;
+    style.WindowBorderSize  = 0.0f;
+    style.ChildBorderSize   = 0.0f;
+    style.FrameBorderSize   = 0.0f; // Flat alignment
     style.PopupBorderSize   = 1.0f;
 
     // Setup Platform/Renderer backends

@@ -109,8 +109,93 @@ TextureRenderer::TextureRenderer()
     , m_Grain(0.0f)
     , m_Aberration(0.0f)
     , m_Sepia(false)
+    , m_FBO(0)
+    , m_FBOTexture(0)
+    , m_RBO(0)
 {
 }
+
+// ... (Initialize/Cleanup remains similar, but need to clean FBOs too)
+
+void TextureRenderer::CopySettingsFrom(const TextureRenderer* other) {
+    if (!other) return;
+    m_Brightness = other->m_Brightness;
+    m_Contrast = other->m_Contrast;
+    m_Saturation = other->m_Saturation;
+    m_Vignette = other->m_Vignette;
+    m_Grain = other->m_Grain;
+    m_Aberration = other->m_Aberration;
+    m_Sepia = other->m_Sepia;
+}
+
+bool TextureRenderer::CreateFramebuffer(int width, int height) {
+    if (m_FBO) {
+        glDeleteFramebuffers(1, &m_FBO);
+        glDeleteTextures(1, &m_FBOTexture);
+        glDeleteRenderbuffers(1, &m_RBO);
+    }
+
+    glGenFramebuffers(1, &m_FBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_FBO);
+
+    // Create texture to render to
+    glGenTextures(1, &m_FBOTexture);
+    glBindTexture(GL_TEXTURE_2D, m_FBOTexture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_FBOTexture, 0);
+
+    // Create Renderbuffer for depth/stencil (optional but good practice)
+    glGenRenderbuffers(1, &m_RBO);
+    glBindRenderbuffer(GL_RENDERBUFFER, m_RBO);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, m_RBO);
+
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        std::cerr << "ERROR::FRAMEBUFFER:: Framebuffer is not complete!" << std::endl;
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        return false;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    return true;
+}
+
+void TextureRenderer::BindFramebuffer() {
+    glBindFramebuffer(GL_FRAMEBUFFER, m_FBO);
+    // Viewport must match FBO size
+    // We assume the caller or RenderTexture sets viewport via projection, 
+    // but typically we should set glViewport here. 
+    // However, RenderTexture uses hardcoded projection logic based on 1280x720 in shader?
+    // Wait, shader projection matches 1280x720 logic. 
+    // If output is 1920x1080, we need to ensure shader projection works?
+    // The current shader hardcodes: 2.0f / 1280.0f... this IS A PROBLEM for variable resolution export.
+    // I should fix RenderTexture projection matrix construction to use arguments or member vars.
+    // For now, let's assume glViewport is handled by caller or we add it.
+}
+
+void TextureRenderer::UnbindFramebuffer() {
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+void TextureRenderer::GetRGBPixels(std::vector<uint8_t>& buffer, int width, int height) {
+    // Read from currently bound FBO (should be called between Bind/Unbind)
+    // Or just bind FBO here? Safer to assume bound or bind explicitly.
+    BindFramebuffer(); 
+    
+    // Buffer size check
+    if (buffer.size() < width * height * 3) {
+        buffer.resize(width * height * 3);
+    }
+    
+    // Pixel alignment
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, buffer.data());
+    
+    // Unbind handled by caller or here? Let's leave it bound for caller to unbind
+}
+
 
 TextureRenderer::~TextureRenderer() {
     Cleanup();
@@ -181,9 +266,16 @@ void TextureRenderer::RenderTexture(float x, float y, float width, float height)
     if ((loc = glGetUniformLocation(m_ShaderProgram, "sepia")) >= 0) glUniform1i(loc, m_Sepia ? 1 : 0);
     if ((loc = glGetUniformLocation(m_ShaderProgram, "time")) >= 0) glUniform1f(loc, (float)glfwGetTime());
 
+    // Dynamic projection based on render dimensions
+    float pW = width > 0 ? width : 1280.0f;
+    float pH = height > 0 ? height : 720.0f;
+    
+    // Set Viewport to match
+    glViewport(0, 0, (GLsizei)pW, (GLsizei)pH);
+    
     float projection[16] = {
-        2.0f / 1280.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, -2.0f / 720.0f, 0.0f, 0.0f,
+        2.0f / pW, 0.0f, 0.0f, 0.0f,
+        0.0f, -2.0f / pH, 0.0f, 0.0f,
         0.0f, 0.0f, -1.0f, 0.0f,
         -1.0f, 1.0f, 0.0f, 1.0f
     };

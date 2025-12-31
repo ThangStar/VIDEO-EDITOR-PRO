@@ -25,10 +25,24 @@ public:
     bool IsExporting() const { return m_IsExporting; }
     bool IsFinished() const { return m_IsFinished; }
 
+    struct EffectParams {
+        float brightness = 0.0f;
+        float contrast = 1.0f;
+        float saturation = 1.0f;
+        float vignette = 0.0f;
+        float grain = 0.0f;
+        float aberration = 0.0f;
+        bool sepia = false;
+    };
+    
+    void SetEffectParams(const EffectParams& params) { m_EffectParams = params; }
+
 private:
     TimelineManager* m_TimelineManager;
     VideoPlayer* m_VideoPlayer;
     VideoEncoder* m_Encoder;
+    
+    EffectParams m_EffectParams;
 
     // Threading
     std::thread m_ExportThread;

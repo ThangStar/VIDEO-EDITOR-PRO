@@ -70,8 +70,19 @@ private:
     bool m_ShowExportDialog = false;
     bool m_ShowExportProgress = false;
     float m_ExportProgress = 0.0f;
-    char m_ExportFilename[256] = "output.mp4";
-    int m_ExportWidth = 1920;
+    
+    // Export Settings (UI State)
+    char m_ExportName[256] = "My Video";
+    char m_ExportPath[512] = "D:/Videos/";
+    int m_ExportResIndex = 2; // 0=480p, 1=720p, 2=1080p, 3=2k, 4=4k
+    int m_ExportBitrateIndex = 0; // 0=Recommended, 1=Higher, 2=Lower
+    int m_ExportCodecIndex = 0; // 0=H.264, 1=HEVC
+    int m_ExportFormatIndex = 0; // 0=mp4, 1=mov
+    int m_ExportFpsIndex = 2; // 0=24, 1=25, 2=30, 3=50, 4=60
+    
+    // Internal use for export call
+    char m_ExportFilename[256] = "output.mp4"; // Deprecated, derived from Name + Path
+    int m_ExportWidth = 1920; 
     int m_ExportHeight = 1080;
     int m_ExportFps = 30;
 

@@ -1,6 +1,9 @@
 #include "ExportManager.h"
 #include "../Timeline/TimelineManager.h"
 #include "../Video/VideoPlayer.h"
+#include "../Rendering/TextureRenderer.h"
+#include <glad/glad.h>
+#include <GLFW/glfw3.h>
 #include <iostream>
 
 ExportManager::ExportManager(TimelineManager* timeline, VideoPlayer* player)
@@ -47,10 +50,24 @@ void ExportManager::CancelExport() {
 void ExportManager::ExportThreadFunc(std::string outputFile, int width, int height, int fps) {
     m_Encoder = new VideoEncoder();
     
+    // Align dimensions to 16 (required for some hardware encoders like h264_mf)
+    int alignedWidth = (width + 15) & ~15;
+    int alignedHeight = (height + 15) & ~15;
+    
+    if (alignedWidth != width || alignedHeight != height) {
+        std::cout << "[ExportManager] Aligning resolution from " << width << "x" << height 
+                  << " to " << alignedWidth << "x" << alignedHeight << " for hardware encoding compatibility." << std::endl;
+        width = alignedWidth;
+        height = alignedHeight;
+    }
+
     // 1. Initialize Encoder
     if (!m_Encoder->Initialize(outputFile, width, height, fps)) {
         std::cerr << "Failed to initialize export encoder!" << std::endl;
+        delete m_Encoder;
+        m_Encoder = nullptr;
         m_IsExporting = false;
+        m_IsFinished = true; // Mark as finished (failed)
         return;
     }
 
@@ -61,8 +78,42 @@ void ExportManager::ExportThreadFunc(std::string outputFile, int width, int heig
     double frameDuration = 1.0 / fps;
 
     // 2. Rendering Loop
+    // Initialize OpenGL Context for this thread (Hidden window)
+    // Note: On Windows this usually works. On macOS it would fail (must be main thread).
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    GLFWwindow* offscreenWindow = glfwCreateWindow(width, height, "ExportContext", nullptr, nullptr);
+    if (!offscreenWindow) {
+        std::cerr << "[ExportManager] Failed to create offscreen window context!" << std::endl;
+        // Continue without effects (fallback)? Or abort?
+        // Fallback to raw video
+    } else {
+        glfwMakeContextCurrent(offscreenWindow);
+        if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+             std::cerr << "[ExportManager] Failed to initialize GLAD" << std::endl;
+        }
+    }
+    
+    // Setup Renderer
+    TextureRenderer* renderer = nullptr;
+    if (offscreenWindow) {
+        renderer = new TextureRenderer();
+        if (renderer->Initialize()) {
+            renderer->CreateFramebuffer(width, height);
+            
+            // Apply effects
+            renderer->SetFilterParams(m_EffectParams.brightness, m_EffectParams.contrast, m_EffectParams.saturation);
+            renderer->SetEffectParams(m_EffectParams.vignette, m_EffectParams.grain, m_EffectParams.aberration, m_EffectParams.sepia);
+            
+            std::cout << "[ExportManager] Offscreen renderer initialized." << std::endl;
+        } else {
+             delete renderer;
+             renderer = nullptr;
+        }
+    }
+
     VideoPlayer tempPlayer;
     std::string currentLoadedFile = "";
+    std::vector<uint8_t> pixelBuffer; // For reading back from FBO
 
     std::cout << "[ExportManager] Starting export loop. Total frames: " << totalFrames << std::endl;
 
@@ -71,7 +122,7 @@ void ExportManager::ExportThreadFunc(std::string outputFile, int width, int heig
             std::cout << "[ExportManager] Cancel requested." << std::endl;
             break;
         }
-
+ 
         double currentTime = i * frameDuration;
         
         bool frameEncoded = false;
@@ -81,7 +132,7 @@ void ExportManager::ExportThreadFunc(std::string outputFile, int width, int heig
         if (!tracks.empty()) {
              currentClip = tracks[0].GetClipAtTime(currentTime);
         }
-
+ 
         if (currentClip) {
             // Load if not loaded or file changed
             if (!tempPlayer.IsLoaded() || currentClip->filepath != currentLoadedFile) {
@@ -98,74 +149,106 @@ void ExportManager::ExportThreadFunc(std::string outputFile, int width, int heig
                 double localTime = currentClip->ToLocalTime(currentTime);
                 bool needsSeek = true;
                 
-                // Check if we are sequential
                 double playerCurrentTime = tempPlayer.GetCurrentTime();
                 double playerFPS = tempPlayer.GetFPS();
-                if (playerFPS <= 0) playerFPS = 30.0; // Safety
+                if (playerFPS <= 0) playerFPS = 30.0;
                 
                 double expectedNextTime = playerCurrentTime + (1.0 / playerFPS);
                 double diff = std::abs(localTime - expectedNextTime);
                 
-                // std::cout << "Target: " << localTime << " | Curr: " << playerCurrentTime << " | ExpNext: " << expectedNextTime << " | Diff: " << diff << std::endl;
-
-                if (diff < 0.1) { // Increased tolerance to 100ms
-                    // Sequential: Don't seek
-                    needsSeek = false;
-                }
-                
-                // Force seek on first frame of clip
+                if (diff < 0.1) needsSeek = false;
                 if (i == 0 || currentClip->filepath != currentLoadedFile) needsSeek = true;
-
+ 
                 if (needsSeek) {
-                    // std::cout << "[ExportManager] Frame " << i << ": Seeking to " << localTime << " (Diff: " << diff << ")" << std::endl;
                     tempPlayer.Seek(localTime, false);
-                } else {
-                     // We are sequential, but we still need to consume frames until we reach target time
-                     // In case the export FPS < video FPS, we might need to skip some decoded frames
-                     // Simple implementation: just decode one frame and hope it matches closest? 
-                     // No, if we drift too far we must seek.
-                     // For now, let's just decode once.
                 }
                 
-                // std::cout << "[ExportManager] Frame " << i << ": Decoding..." << std::endl;
                 bool decodeSuccess = tempPlayer.DecodeNextFrame();
-                if (decodeSuccess) {
-                    // Get Data
-                    const uint8_t* data = tempPlayer.GetFrameData(); // RGB data
-                    if (data) {
-                         // std::cout << "[ExportManager] Frame " << i << ": Encoding..." << std::endl;
-                        m_Encoder->EncodeFrame(data);
-                        frameEncoded = true;
-                    }
-                } 
+                // If decode fails, try using last frame (if we didn't seek just now)
                 
-                if (!frameEncoded) {
-                    // If decode failed (EOF?) or no data, try to use LAST frame from player if available
-                    // This handles the case where audio/timeline is slightly longer than video
-                     const uint8_t* data = tempPlayer.GetFrameData();
-                     if (data) {
-                         // Use last known frame
-                         m_Encoder->EncodeFrame(data);
-                         frameEncoded = true; 
-                     } else {
-                         std::cerr << "[ExportManager] Frame " << i << ": Decode failed and no previous frame!" << std::endl;
-                     }
+                const uint8_t* data = tempPlayer.GetFrameData(); 
+                if (data) {
+                    if (renderer) {
+                        // RENDER WITH EFFECTS
+                        // Ensure input texture exists and matches video frame dimensions
+                        static int lastTexW = 0, lastTexH = 0;
+                        if (renderer->GetTextureID() == 0 || lastTexW != tempPlayer.GetWidth() || lastTexH != tempPlayer.GetHeight()) {
+                            renderer->CreateTexture(tempPlayer.GetWidth(), tempPlayer.GetHeight());
+                            lastTexW = tempPlayer.GetWidth();
+                            lastTexH = tempPlayer.GetHeight();
+                        }
+
+                        renderer->UpdateTexture(data, tempPlayer.GetWidth(), tempPlayer.GetHeight()); // Update with original dimensions
+                        renderer->BindFramebuffer();
+                        
+                        // Render to FBO (sized to export width/height)
+                        // Clear
+                        glClearColor(0,0,0,1);
+                        glClear(GL_COLOR_BUFFER_BIT);
+                        
+                        renderer->RenderTexture(-1.0f, -1.0f, 2.0f, 2.0f); // Render Fullscreen Quad in Normalized Device Coordinates? 
+                        // Wait, RenderTexture uses x,y,w,h in pixels or NDC?
+                        // The loop in TextureRenderer uses pixels: x, y, width, height. 
+                        // AND it uses Dynamic Projection now: 2.0/pW... so 0,0 is correct?
+                        // If projection is 0..W, 0..H -> -1..1, then passing 0,0, W, H works.
+                        renderer->RenderTexture(0, 0, (float)width, (float)height);
+                        
+                        // Read Pixels
+                        renderer->GetRGBPixels(pixelBuffer, width, height);
+                        renderer->UnbindFramebuffer();
+                        
+                        m_Encoder->EncodeFrame(pixelBuffer.data());
+                    } else {
+                        // Raw encoding (fallback)
+                        // Resize if needed? NVENC might handle it, or we send raw.
+                        // If dimensions mismatch, we might crash. 
+                        // VideoEncoder Initialize set context width/height.
+                        // If data is different size, sws_scale in EncodeFrame handles it?
+                        // VideoEncoder::EncodeFrame expects data matching its context? 
+                        // No, VideoEncoder::EncodeFrame takes rgbData and uses sws_scale which assumes Input size == m_Width/m_Height?
+                        // Let's check VideoEncoder.cpp: 
+                        // It uses `m_Width * 3` as stride. It assumes input is `m_Width` x `m_Height`.
+                        // If clip resolution != export resolution, this CRASHES.
+                        // So we MUST use renderer to resize, or fix VideoEncoder to accept input dimensions.
+                        // Given we implemented Renderer, we rely on it for resizing.
+                        // If renderer failed, we are in trouble.
+                        m_Encoder->EncodeFrame(data); 
+                    }
+                    frameEncoded = true;
                 }
+                
             }
         }
-
+ 
         if (!frameEncoded) {
             // Black frame
-            std::vector<uint8_t> blackFrame(width * height * 3, 0);
-            // RGB24: 0, 0, 0 is black
-            m_Encoder->EncodeFrame(blackFrame.data());
+            if (renderer) {
+                renderer->BindFramebuffer();
+                glClearColor(0,0,0,1);
+                glClear(GL_COLOR_BUFFER_BIT);
+                renderer->GetRGBPixels(pixelBuffer, width, height);
+                renderer->UnbindFramebuffer();
+                m_Encoder->EncodeFrame(pixelBuffer.data());
+            } else {
+                 std::vector<uint8_t> blackFrame(width * height * 3, 0);
+                 m_Encoder->EncodeFrame(blackFrame.data());
+            }
         }
-
+ 
         m_Progress = (float)(i + 1) / totalFrames;
         
         if (i % 30 == 0) {
              std::cout << "[ExportManager] Processed " << i << "/" << totalFrames << " frames." << std::endl;
         }
+    }
+
+    // Cleanup Renderer
+    if (renderer) {
+        delete renderer;
+        renderer = nullptr;
+    }
+    if (offscreenWindow) {
+        glfwDestroyWindow(offscreenWindow);
     }
 
     // 3. Finalize

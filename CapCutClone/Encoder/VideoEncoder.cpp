@@ -104,16 +104,35 @@ bool VideoEncoder::Initialize(const std::string& outputFile, int width, int heig
     m_Stream->time_base = m_CodecCtx->time_base;
     m_CodecCtx->framerate = {fps, 1};
     
-    m_CodecCtx->pix_fmt = AV_PIX_FMT_YUV420P;
+    // Intelligent Pixel Format Selection
+    m_CodecCtx->pix_fmt = AV_PIX_FMT_YUV420P; // Default fallback
     if (codec->pix_fmts) {
-         // Check if codec supports YUV420P (usually yes)
-         // NVENC sometimes prefers NV12
-         // For simplicity, sticking to YUV420P unless specific requirement fails
+        bool foundNV12 = false;
+        bool foundYUV420P = false;
+        
+        for (const enum AVPixelFormat* p = codec->pix_fmts; *p != -1; p++) {
+            if (*p == AV_PIX_FMT_NV12) foundNV12 = true;
+            if (*p == AV_PIX_FMT_YUV420P) foundYUV420P = true;
+        }
+        
+        if (foundNV12) {
+             m_CodecCtx->pix_fmt = AV_PIX_FMT_NV12;
+        } else if (foundYUV420P) {
+             m_CodecCtx->pix_fmt = AV_PIX_FMT_YUV420P;
+        } else {
+             // Take the first supported one if neither common format is found
+             m_CodecCtx->pix_fmt = codec->pix_fmts[0];
+        }
     }
+    std::cout << "[VideoEncoder] Selected Pixel Format: " << av_get_pix_fmt_name(m_CodecCtx->pix_fmt) << std::endl;
 
     m_CodecCtx->bit_rate = bitrate;
     m_CodecCtx->gop_size = 12;
     m_CodecCtx->max_b_frames = 2;
+    
+    // Explicitly set Profile (High is widely supported and good quality)
+    // Helps avoid "Invalid Argument" with MF if it defaults to Baseline/Main on High Res
+    m_CodecCtx->profile = AV_PROFILE_H264_HIGH;
 
     // Global header for MP4
     if (m_FormatCtx->oformat->flags & AVFMT_GLOBALHEADER) {
@@ -121,8 +140,11 @@ bool VideoEncoder::Initialize(const std::string& outputFile, int width, int heig
     }
 
     // Open Codec
-    if (avcodec_open2(m_CodecCtx, codec, nullptr) < 0) {
-        std::cerr << "Could not open codec!" << std::endl;
+    int ret = avcodec_open2(m_CodecCtx, codec, nullptr);
+    if (ret < 0) {
+        char errbuf[256];
+        av_strerror(ret, errbuf, sizeof(errbuf));
+        std::cerr << "Could not open codec! Error: " << errbuf << " (" << ret << ")" << std::endl;
         return false;
     }
 
