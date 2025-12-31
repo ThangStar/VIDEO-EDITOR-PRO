@@ -1,5 +1,6 @@
 #include "ExportManager.h"
 #include "../Timeline/TimelineManager.h"
+#include "../Timeline/EffectLayer.h"
 #include "../Video/VideoPlayer.h"
 #include "../Rendering/TextureRenderer.h"
 #include <glad/glad.h>
@@ -231,12 +232,53 @@ void ExportManager::ExportThreadFunc(std::string outputFile, int width, int heig
                     // Update Texture with new frame data!
                     renderer->UpdateTexture(tempPlayer.GetFrameData(), tempPlayer.GetWidth(), tempPlayer.GetHeight());
                     
-                    // 2. Render to FBO
+                    // CRITICAL: Apply timeline effects at current export time
+                    // Clear effects first
+                    renderer->SetBlurEffect(0.0f, 0);
+                    
+                    // Get effects active at this frame time
+                    auto activeEffects = m_TimelineManager->GetActiveEffects(currentTime);
+                    
+                    // Debug: Log active effects (only on first occurrence)
+                    if (i == 0 && !activeEffects.empty()) {
+                        std::cout << "[ExportManager] Found " << activeEffects.size() << " active effects at start" << std::endl;
+                    }
+                    
+                    // Apply each active effect
+                    for (auto* effect : activeEffects) {
+                        if (!effect) continue;
+                        
+                        // Apply based on effect type
+                        if (effect->type >= EffectLayer::BLUR_GAUSSIAN && effect->type <= EffectLayer::BLUR_ZOOM) {
+                            // Blur effects
+                            float intensity = effect->params.count("intensity") ? effect->params.at("intensity") : 0.5f;
+                            int blurType = effect->params.count("blurType") ? (int)effect->params.at("blurType") : 0;
+                            
+                            std::cout << "[ExportManager] Frame " << i << " (" << currentTime << "s): Applying " 
+                                      << effect->GetEffectName() << " - Intensity: " << intensity 
+                                      << ", BlurType: " << blurType << std::endl;
+                            
+                            renderer->SetBlurEffect(intensity, blurType);
+                        }
+                        // Future: Add other effect types
+                    }
+                    
+                    
+                    // CRITICAL: Render to FBO with filters+effects applied
+                    // GetFilteredTextureID internally:
+                    // 1. Updates video texture
+                    // 2. Renders through shader with filters + effects
+                    // 3. Returns the filtered result texture
+                    // We then render that filtered texture to main export FBO
+                    
                     renderer->BindFramebuffer();
                     glViewport(0, 0, width, height);
                     glClear(GL_COLOR_BUFFER_BIT);
                     
-                    // Draw the video frame
+                    // Update the video texture first
+                    renderer->UpdateTexture(tempPlayer.GetFrameData(), tempPlayer.GetWidth(), tempPlayer.GetHeight());
+                    
+                    // RenderTexture will apply filters and effects through shader
                     renderer->RenderTexture(0, 0, (float)width, (float)height);
                     
                     if (usingPBO) {

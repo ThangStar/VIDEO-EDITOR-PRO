@@ -215,7 +215,8 @@ bool Application::InitializeImGui() {
         "../",
         "../CapCutClone/",
         "../../",
-        "../../CapCutClone/"
+        "../../CapCutClone/",
+        "CapCutClone/" 
     };
 
     std::string finalFontPath = configFontPath;
@@ -400,6 +401,10 @@ void Application::KeyCallback(GLFWwindow* window, int key, int scancode, int act
 
 void Application::OpenVideoFile() {
 #ifdef _WIN32
+    // Save current working directory (GetOpenFileNameA changes it!)
+    char originalDir[MAX_PATH];
+    GetCurrentDirectoryA(MAX_PATH, originalDir);
+    
     OPENFILENAMEA ofn;
     char szFile[260] = {0};
 
@@ -413,7 +418,7 @@ void Application::OpenVideoFile() {
     ofn.lpstrFileTitle = nullptr;
     ofn.nMaxFileTitle = 0;
     ofn.lpstrInitialDir = nullptr;
-    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR; // Add OFN_NOCHANGEDIR flag
 
     if (GetOpenFileNameA(&ofn)) {
         std::cout << "Selected file: " << szFile << std::endl;
@@ -434,6 +439,10 @@ void Application::OpenVideoFile() {
             }
         }
     }
+    
+    // Restore original working directory
+    SetCurrentDirectoryA(originalDir);
+    std::cout << "[Application] Restored working directory to: " << originalDir << std::endl;
 #else
     std::cout << "File dialog not implemented for this platform" << std::endl;
 #endif

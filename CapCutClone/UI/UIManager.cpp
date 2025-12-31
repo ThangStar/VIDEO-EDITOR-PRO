@@ -278,9 +278,29 @@ void UIManager::RenderMediaPanel(float x, float y, float w, float h) {
         ImGui::Separator();
         
         if (activeTab == 6) { // FILTERS TAB
-            // Generate Thumbnails if needed
-            if (m_FilterThumbnails.empty() && !m_FilterGenerationAttempted) {
-                m_FilterGenerationAttempted = true;
+            // Generate Thumbnails if needed or if they're invalid
+            bool thumbnailsValid = !m_FilterThumbnails.empty();
+            if (thumbnailsValid) {
+                // Verify first thumbnail is still valid
+                GLboolean isTexture = glIsTexture(m_FilterThumbnails[0]);
+                thumbnailsValid = (isTexture == GL_TRUE);
+                
+                // Also check if demo image is still valid
+                if (thumbnailsValid && m_DemoImageTexture != 0) {
+                    GLboolean isDemoValid = glIsTexture(m_DemoImageTexture);
+                    if (isDemoValid != GL_TRUE) {
+                        std::cout << "[UIManager] Demo image texture became invalid, regenerating..." << std::endl;
+                        thumbnailsValid = false;
+                    }
+                }
+            }
+            
+            if (!thumbnailsValid) {
+                // Clear old thumbnails and regenerate
+                std::cout << "[UIManager] Regenerating filter thumbnails (valid=" << thumbnailsValid << ", count=" << m_FilterThumbnails.size() << ")" << std::endl;
+                m_FilterThumbnails.clear();
+                m_FilterGenerationAttempted = false;
+                m_DemoImageTexture = 0; // Reset to force reload
                 LoadDemoImage();
                 GenerateFilterThumbnails();
             }
@@ -327,32 +347,82 @@ void UIManager::RenderMediaPanel(float x, float y, float w, float h) {
                 ImGui::EndTable();
             }
         } 
-        else { // EFFECTS TAB (Old Mockup)
-            // ... (Keep existing simple Logic for Effects if needed, or replace)
-             // Content Grid
+        else { // EFFECTS TAB
+            ImGui::Text("Video Effects");
+            ImGui::Separator();
+            
+            // Blur Effects Section
+            ImGui::TextColored(ImVec4(0.0f, 0.8f, 0.85f, 1.0f), "Blur Effects");
+            ImGui::Spacing();
+            
             float itemSz = 80;
             int cols = (int)(ImGui::GetContentRegionAvail().x / (itemSz + 10));
             if (cols < 1) cols = 1;
             
-            if (ImGui::BeginTable("EffectGrid", cols)) {
-                 const char* effNames[] = { "Vignette", "Grain", "Aberration", "Sepia", "Glow", "Blur" };
-                 for(int i=0; i<6; i++) {
-                     ImGui::TableNextColumn();
-                     ImGui::PushID(i);
-                     if(ImGui::Button("##Eff", ImVec2(itemSz, itemSz))) {
-                         // Apply effect logic
-                         if(m_TextureRenderer) {
-                             if(i==0) m_TextureRenderer->SetEffectParams(0.5f, 0, 0, false);
-                             if(i==1) m_TextureRenderer->SetEffectParams(0, 0.5f, 0, false);
-                             if(i==2) m_TextureRenderer->SetEffectParams(0, 0, 0.015f, false);
-                             if(i==3) m_TextureRenderer->SetEffectParams(0, 0, 0, true);
-                         }
-                     }
-                     ImGui::TextWrapped("%s", effNames[i]);
-                     ImGui::PopID();
-                 }
-                 ImGui::EndTable();
+            if (ImGui::BeginTable("BlurGrid", cols)) {
+                const char* blurNames[] = { "Gaussian", "Motion", "Radial", "Zoom" };
+                
+                for(int i=0; i<4; i++) {
+                    ImGui::TableNextColumn();
+                    ImGui::PushID(i);
+                    
+                    if(ImGui::Button("##BlurBtn", ImVec2(itemSz, itemSz))) {
+                        // Add effect to timeline at current playhead position
+                        if (m_TimelineManager) {
+                            EffectLayer::EffectType effectType = (EffectLayer::EffectType)(EffectLayer::BLUR_GAUSSIAN + i);
+                            double startTime = m_CurrentTime;
+                            double duration = 2.0; // Default 2 seconds
+                            
+                            int effectId = m_TimelineManager->AddEffectLayer(effectType, startTime, duration);
+                            m_SelectedEffectId = effectId; // Select the newly added effect
+                            
+                            std::cout << "[UIManager] Added " << blurNames[i] 
+                                      << " effect to timeline at " << startTime << "s" << std::endl;
+                        }
+                    }
+                    
+                    ImGui::TextWrapped("%s", blurNames[i]);
+                    ImGui::PopID();
+                }
+                ImGui::EndTable();
             }
+            
+            // Show parameter controls if an effect is selected
+            if (m_SelectedEffectId >= 0 && m_TimelineManager) {
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+                
+                // Find selected effect
+                auto& effects = m_TimelineManager->GetEffectLayers();
+                auto it = std::find_if(effects.begin(), effects.end(),
+                    [this](const EffectLayer& e) { return e.id == m_SelectedEffectId; });
+                
+                if (it != effects.end()) {
+                    ImGui::Text("Selected: %s", it->GetEffectName());
+                    ImGui::Text("Time: %.1fs - %.1fs", it->startTime, it->startTime + it->duration);
+                    
+                    ImGui::Spacing();
+                    
+                    // Intensity slider
+                    float intensity = it->params.count("intensity") ? it->params.at("intensity") : 0.5f;
+                    if (ImGui::SliderFloat("Intensity", &intensity, 0.0f, 1.0f, "%.2f")) {
+                        m_TimelineManager->UpdateEffectParam(m_SelectedEffectId, "intensity", intensity);
+                    }
+                    
+                    ImGui::Spacing();
+                    if (ImGui::Button("Delete Effect", ImVec2(-1, 30))) {
+                        m_TimelineManager->RemoveEffectLayer(m_SelectedEffectId);
+                        m_SelectedEffectId = -1;
+                    }
+                }
+            }
+            
+            // Placeholder for other effects
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+            ImGui::TextDisabled("More effects coming soon...");
         }
     }
     else {
@@ -413,6 +483,29 @@ void UIManager::RenderPreviewPanel(float x, float y, float w, float h) {
 
     // Draw Video
     if (m_VideoPlayer && m_VideoPlayer->IsLoaded() && m_TextureRenderer) {
+        // CRITICAL: Apply timeline effects at current playback time
+        if (m_TimelineManager) {
+            // Clear all effects first
+            m_TextureRenderer->SetBlurEffect(0.0f, 0);
+            
+            // Get effects active at current time
+            auto activeEffects = m_TimelineManager->GetActiveEffects(m_CurrentTime);
+            
+            // Apply each active effect
+            for (auto* effect : activeEffects) {
+                if (!effect) continue;
+                
+                // Apply based on effect type
+                if (effect->type >= EffectLayer::BLUR_GAUSSIAN && effect->type <= EffectLayer::BLUR_ZOOM) {
+                    // Blur effects
+                    float intensity = effect->params.count("intensity") ? effect->params.at("intensity") : 0.5f;
+                    int blurType = effect->params.count("blurType") ? (int)effect->params.at("blurType") : 0;
+                    m_TextureRenderer->SetBlurEffect(intensity, blurType);
+                }
+                // Future: Add other effect types (glitch, distortion, etc.)
+            }
+        }
+        
         ImGui::SetCursorPos(ImVec2(offsetX, offsetY));
         // Use filtered texture ID so filters are applied in preview
         GLuint previewTexture = m_TextureRenderer->GetFilteredTextureID((int)previewW, (int)previewH);
@@ -679,7 +772,140 @@ void UIManager::RenderTimelineTracks() {
         }
     }
     
-    // C. Playhead
+    // C. Effect Track (NEW!)
+    if (m_TimelineManager) {
+        float effectTrackY = startY + trackCount * (trackHeight + gap) + gap;
+        float effectTrackHeight = 30.0f;
+        
+        // Effect track background
+        drawList->AddRectFilled(
+            ImVec2(cursor.x, effectTrackY), 
+            ImVec2(cursor.x + totalWidth, effectTrackY + effectTrackHeight),
+            IM_COL32(25, 25, 30, 255), 
+            2.0f
+        );
+        
+        // Track label
+        drawList->AddText(ImVec2(cursor.x + 5, effectTrackY + 8), IM_COL32(150, 150, 150, 255), "Effects");
+        
+        // Render effect layers
+        auto& effectLayers = m_TimelineManager->GetEffectLayers();
+        for (auto& effect : effectLayers) {
+            float x1 = cursor.x + (float)effect.startTime * pixelsPerSecond;
+            float width = (float)effect.duration * pixelsPerSecond;
+            float x2 = x1 + width;
+            float y1 = effectTrackY + 2;
+            float y2 = effectTrackY + effectTrackHeight - 2;
+            
+            // Effect color based on type
+            ImU32 effectColor = IM_COL32(70, 130, 180, 220); // Default blue for blur
+            if (effect.type >= EffectLayer::GLITCH && effect.type <= EffectLayer::DISTORTION) {
+                effectColor = IM_COL32(150, 70, 180, 220); // Purple for glitch/distortion
+            } else if (effect.type >= EffectLayer::EDGE_GLOW) {
+                effectColor = IM_COL32(180, 130, 70, 220); // Orange for creative
+            }
+            
+            bool isSelected = (m_SelectedEffectId == effect.id);
+            
+            // Draw effect bar
+            drawList->AddRectFilled(
+                ImVec2(x1, y1), 
+                ImVec2(x2, y2),
+                isSelected ? IM_COL32_WHITE : effectColor,
+                3.0f
+            );
+            
+            // Selection border
+            if (isSelected) {
+                drawList->AddRect(ImVec2(x1, y1), ImVec2(x2, y2), IM_COL32(0, 200, 215, 255), 3.0f, 0, 2.0f);
+            }
+            
+            // Effect label
+            drawList->PushClipRect(ImVec2(x1, y1), ImVec2(x2, y2), true);
+            drawList->AddText(
+                ImVec2(x1 + 4, y1 + 6), 
+                isSelected ? IM_COL32_BLACK : IM_COL32_WHITE,
+                effect.GetEffectName()
+            );
+            drawList->PopClipRect();
+            
+            // Resize handles
+            float handleWidth = 6.0f;
+            if (isSelected) {
+                // Left handle
+                drawList->AddRectFilled(
+                    ImVec2(x1, y1), 
+                    ImVec2(x1 + handleWidth, y2),
+                    IM_COL32(255, 255, 255, 200)
+                );
+                // Right handle
+                drawList->AddRectFilled(
+                    ImVec2(x2 - handleWidth, y1), 
+                    ImVec2(x2, y2),
+                    IM_COL32(255, 255, 255, 200)
+                );
+            }
+            
+            // Interaction - Main body (move)
+            ImGui::SetCursorScreenPos(ImVec2(x1 + handleWidth, y1));
+            std::string btnId = "##Effect" + std::to_string(effect.id);
+            ImGui::InvisibleButton(btnId.c_str(), ImVec2(width - handleWidth * 2, effectTrackHeight - 4));
+            
+            if (ImGui::IsItemClicked()) {
+                m_SelectedEffectId = effect.id;
+                std::cout << "[UIManager] Selected effect: " << effect.GetEffectName() 
+                          << " (ID: " << effect.id << ")" << std::endl;
+            }
+            
+            // Dragging - move effect
+            if (ImGui::IsItemActive() && ImGui::IsMouseDragging(0)) {
+                float delta = ImGui::GetMouseDragDelta(0).x;
+                if (std::abs(delta) > 0) {
+                    double newStartTime = effect.startTime + delta / pixelsPerSecond;
+                    m_TimelineManager->MoveEffectLayer(effect.id, newStartTime);
+                    ImGui::ResetMouseDragDelta(0);
+                }
+            }
+            
+            // Left resize handle interaction
+            if (isSelected) {
+                ImGui::SetCursorScreenPos(ImVec2(x1, y1));
+                std::string leftHandleId = "##EffectLeftHandle" + std::to_string(effect.id);
+                ImGui::InvisibleButton(leftHandleId.c_str(), ImVec2(handleWidth, effectTrackHeight - 4));
+                
+                if (ImGui::IsItemActive() && ImGui::IsMouseDragging(0)) {
+                    float delta = ImGui::GetMouseDragDelta(0).x;
+                    if (std::abs(delta) > 0) {
+                        double newStartTime = effect.startTime + delta / pixelsPerSecond;
+                        double newDuration = effect.duration - delta / pixelsPerSecond;
+                        if (newDuration >= 0.1) { // Min duration
+                            m_TimelineManager->MoveEffectLayer(effect.id, newStartTime);
+                            m_TimelineManager->ResizeEffectLayer(effect.id, newDuration);
+                        }
+                        ImGui::ResetMouseDragDelta(0);
+                    }
+                }
+                
+                // Right resize handle interaction
+                ImGui::SetCursorScreenPos(ImVec2(x2 - handleWidth, y1));
+                std::string rightHandleId = "##EffectRightHandle" + std::to_string(effect.id);
+                ImGui::InvisibleButton(rightHandleId.c_str(), ImVec2(handleWidth, effectTrackHeight - 4));
+                
+                if (ImGui::IsItemActive() && ImGui::IsMouseDragging(0)) {
+                    float delta = ImGui::GetMouseDragDelta(0).x;
+                    if (std::abs(delta) > 0) {
+                        double newDuration = effect.duration + delta / pixelsPerSecond;
+                        if (newDuration >= 0.1) { // Min duration
+                            m_TimelineManager->ResizeEffectLayer(effect.id, newDuration);
+                        }
+                        ImGui::ResetMouseDragDelta(0);
+                    }
+                }
+            }
+        }
+    }
+    
+    // D. Playhead
     float phX = cursor.x + m_CurrentTime * pixelsPerSecond;
     float phY = cursor.y;
     drawList->AddLine(ImVec2(phX, phY), ImVec2(phX, phY + 500), IM_COL32(255,255,255,255), 1.0f);
@@ -1010,6 +1236,7 @@ void UIManager::RenderExportDialog() {
                 int h = GetHeightFromIndex(m_ExportResIndex);
                 int f = GetFpsFromIndex(m_ExportFpsIndex);
 
+                m_LastExportPath = m_ExportFilename; // Save for success dialog
                 m_ExportManager->StartExport(m_ExportFilename, w, h, f);
             }
             m_ShowExportDialog = false;
@@ -1031,8 +1258,60 @@ void UIManager::RenderExportProgress() {
             ImGui::ProgressBar(m_ExportProgress, ImVec2(300, 0));
             
             if (!m_ExportManager->IsExporting()) {
-                 if (ImGui::Button("Close")) m_ShowExportProgress = false;
+                // Export finished - show success dialog
+                m_ShowExportProgress = false;
+                m_ShowExportSuccess = true;
             }
+            ImGui::EndPopup();
+        }
+    }
+    
+    // Export Success Dialog (CapCut style)
+    if (m_ShowExportSuccess) {
+        ImGui::OpenPopup("Export Complete");
+        ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+        ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_Appearing);
+        
+        if (ImGui::BeginPopupModal("Export Complete", &m_ShowExportSuccess, ImGuiWindowFlags_NoResize)) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0.8f, 0.85f, 1));
+            ImGui::Text(ICON_FA_CIRCLE_CHECK " Export Successful!");
+            ImGui::PopStyleColor();
+            
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+            
+            ImGui::TextWrapped("Video is saved to:");
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.7f, 1));
+            ImGui::TextWrapped("%s", m_LastExportPath.c_str());
+            ImGui::PopStyleColor();
+            
+            ImGui::Spacing();
+            ImGui::Spacing();
+            
+            // Open Folder Button
+            if (ImGui::Button(ICON_FA_FOLDER_OPEN "  Open Folder", ImVec2(200, 40))) {
+                // Extract directory from full path
+                std::string directory = m_LastExportPath;
+                size_t lastSlash = directory.find_last_of("/\\");
+                if (lastSlash != std::string::npos) {
+                    directory = directory.substr(0, lastSlash);
+                }
+                
+                // Open folder in Windows Explorer
+                #ifdef _WIN32
+                std::string command = "explorer \"" + directory + "\"";
+                system(command.c_str());
+                #endif
+            }
+            
+            ImGui::SameLine();
+            
+            if (ImGui::Button("Close", ImVec2(100, 40))) {
+                m_ShowExportSuccess = false;
+            }
+            
             ImGui::EndPopup();
         }
     }
@@ -1061,7 +1340,16 @@ void UIManager::OnOpenVideoClicked() {}
 // Helper Methods Implementation
 
 void UIManager::LoadDemoImage() {
-    if (m_DemoImageTexture != 0) return; // Already loaded
+    // Check if already loaded AND still valid
+    if (m_DemoImageTexture != 0) {
+        GLboolean isValid = glIsTexture(m_DemoImageTexture);
+        if (isValid == GL_TRUE) {
+            return; // Already loaded and valid
+        } else {
+            std::cout << "[UIManager] Demo image texture is invalid, reloading..." << std::endl;
+            m_DemoImageTexture = 0; // Reset so we can reload
+        }
+    }
 
     // Try to get path from Configuration first
     std::string configPath = Configuration::GetInstance().GetString("DemoImagePath");

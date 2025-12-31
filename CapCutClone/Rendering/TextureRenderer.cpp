@@ -42,6 +42,11 @@ uniform int sepia;         // 0 or 1
 uniform int filterType;    // 0=None, 1=LightGreen, 2=80s, 3=Milky, etc.
 uniform float time;        // For animated grain
 
+// Advanced Blur Effects
+uniform float blurAmount;  // 0.0 to 1.0
+uniform int blurType;      // 0=Gaussian, 1=Motion, 2=Radial, 3=Zoom
+uniform vec2 resolution;   // Screen resolution for blur sampling
+
 float rand(vec2 co){
     return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453);
 }
@@ -62,19 +67,94 @@ vec3 hsv2rgb(vec3 c) {
     return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
 
+// Blur Helper Functions
+vec3 applyGaussianBlur(vec2 uv, float amount) {
+    vec3 color = vec3(0.0);
+    float total = 0.0;
+    float pixelSize = amount * 0.002; // Scale blur based on amount
+    
+    // 9-tap Gaussian kernel (optimized)
+    for(float x = -2.0; x <= 2.0; x += 1.0) {
+        for(float y = -2.0; y <= 2.0; y += 1.0) {
+            vec2 offset = vec2(x, y) * pixelSize;
+            float weight = exp(-(x*x + y*y) / 8.0); // Gaussian weight
+            color += texture(texture1, uv + offset).rgb * weight;
+            total += weight;
+        }
+    }
+    return color / total;
+}
+
+vec3 applyMotionBlur(vec2 uv, float amount) {
+    vec3 color = vec3(0.0);
+    int samples = 8;
+    float angle = 0.0; // Horizontal motion, can be made uniform for custom direction
+    vec2 direction = vec2(cos(angle), sin(angle)) * amount * 0.01;
+    
+    for(int i = 0; i < samples; i++) {
+        float t = float(i) / float(samples - 1) - 0.5;
+        color += texture(texture1, uv + direction * t).rgb;
+    }
+    return color / float(samples);
+}
+
+vec3 applyRadialBlur(vec2 uv, float amount) {
+    vec3 color = vec3(0.0);
+    vec2 center = vec2(0.5, 0.5);
+    int samples = 12;
+    
+    for(int i = 0; i < samples; i++) {
+        float scale = 1.0 - amount * 0.05 * (float(i) / float(samples));
+        vec2 offset = (uv - center) * scale + center;
+        color += texture(texture1, offset).rgb;
+    }
+    return color / float(samples);
+}
+
+vec3 applyZoomBlur(vec2 uv, float amount) {
+    vec3 color = vec3(0.0);
+    vec2 center = vec2(0.5, 0.5);
+    vec2 dir = uv - center;
+    int samples = 10;
+    
+    for(int i = 0; i < samples; i++) {
+        float t = float(i) / float(samples);
+        float scale = 1.0 - (amount * 0.1 * t);
+        vec2 sampleUv = center + dir * scale;
+        color += texture(texture1, sampleUv).rgb;
+    }
+    return color / float(samples);
+}
+
 void main() {
     vec2 uv = TexCoord;
     
-    // Chromatic Aberration
+    // Apply Blur Effects FIRST (before other color processing)
     vec3 texColor;
-    if (aberration > 0.0) {
-        float r = texture(texture1, uv + vec2(aberration, 0.0)).r;
-        float g = texture(texture1, uv).g;
-        float b = texture(texture1, uv - vec2(aberration, 0.0)).b;
-        texColor = vec3(r, g, b);
+    if (blurAmount > 0.0) {
+        if (blurType == 0) {
+            texColor = applyGaussianBlur(uv, blurAmount);
+        } else if (blurType == 1) {
+            texColor = applyMotionBlur(uv, blurAmount);
+        } else if (blurType == 2) {
+            texColor = applyRadialBlur(uv, blurAmount);
+        } else if (blurType == 3) {
+            texColor = applyZoomBlur(uv, blurAmount);
+        } else {
+            texColor = texture(texture1, uv).rgb;
+        }
     } else {
         texColor = texture(texture1, uv).rgb;
     }
+    
+    // Chromatic Aberration (applied AFTER blur)
+    if (aberration > 0.0) {
+        float r = texture(texture1, uv + vec2(aberration, 0.0)).r;
+        float g = texColor.g; // Use already blurred green channel
+        float b = texture(texture1, uv - vec2(aberration, 0.0)).b;
+        texColor = vec3(r, g, b);
+    }
+    // Note: if aberration is 0, texColor already has the correct (possibly blurred) value
     
     // --- FILTERS ---
     if (filterType == 1) { // Light Green
@@ -214,7 +294,20 @@ TextureRenderer::TextureRenderer()
     , m_PreviewHeight(0)
     , m_FlipY(false)
     , m_FilterType(0)
+    , m_BlurAmount(0.0f)
+    , m_BlurType(0)
+    , m_GlitchIntensity(0.0f)
+    , m_RippleFreq(0.0f)
+    , m_RippleAmp(0.0f)
+    , m_Distortion(0.0f)
+    , m_EdgeGlowIntensity(0.0f)
+    , m_FadeAmount(0.0f)
+    , m_ZoomAmount(0.0f)
+    , m_LightLeakIntensity(0.0f)
 {
+    m_EdgeGlowColor[0] = 1.0f;
+    m_EdgeGlowColor[1] = 1.0f;
+    m_EdgeGlowColor[2] = 1.0f;
 }
 
 void TextureRenderer::SetFlipY(bool flip) {
@@ -237,6 +330,10 @@ void TextureRenderer::CopySettingsFrom(const TextureRenderer* other) {
     m_Aberration = other->m_Aberration;
     m_Sepia = other->m_Sepia;
     m_FilterType = other->m_FilterType;
+    
+    // Copy blur settings
+    m_BlurAmount = other->m_BlurAmount;
+    m_BlurType = other->m_BlurType;
 }
 
 bool TextureRenderer::CreateFramebuffer(int width, int height) {
@@ -374,6 +471,11 @@ void TextureRenderer::RenderTexture(float x, float y, float width, float height)
     if ((loc = glGetUniformLocation(m_ShaderProgram, "sepia")) >= 0) glUniform1i(loc, m_Sepia ? 1 : 0);
     if ((loc = glGetUniformLocation(m_ShaderProgram, "filterType")) >= 0) glUniform1i(loc, m_FilterType);
     if ((loc = glGetUniformLocation(m_ShaderProgram, "time")) >= 0) glUniform1f(loc, (float)glfwGetTime());
+    
+    // Blur uniforms
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "blurAmount")) >= 0) glUniform1f(loc, m_BlurAmount);
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "blurType")) >= 0) glUniform1i(loc, m_BlurType);
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "resolution")) >= 0) glUniform2f(loc, width, height);
 
     // Dynamic projection based on render dimensions
     float pW = width > 0 ? width : 1280.0f;
@@ -562,6 +664,11 @@ GLuint TextureRenderer::GetFilteredTextureID(int width, int height) {
     if ((loc = glGetUniformLocation(m_ShaderProgram, "filterType")) >= 0) glUniform1i(loc, m_FilterType);
     if ((loc = glGetUniformLocation(m_ShaderProgram, "time")) >= 0) glUniform1f(loc, (float)glfwGetTime());
     
+    // Blur uniforms (CRITICAL for preview!)
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "blurAmount")) >= 0) glUniform1f(loc, m_BlurAmount);
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "blurType")) >= 0) glUniform1i(loc, m_BlurType);
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "resolution")) >= 0) glUniform2f(loc, (float)width, (float)height);
+    
     // Projection matrix for FBO
     float projection[16] = {
         2.0f / width, 0.0f, 0.0f, 0.0f,
@@ -673,6 +780,44 @@ void TextureRenderer::SetEffectParams(float vignette, float grain, float aberrat
     m_Grain = grain;
     m_Aberration = aberration;
     m_Sepia = sepia;
+}
+
+// Advanced Effects Setters
+void TextureRenderer::SetBlurEffect(float amount, int type) {
+    m_BlurAmount = amount;
+    m_BlurType = type;
+}
+
+void TextureRenderer::SetGlitchEffect(float intensity) {
+    m_GlitchIntensity = intensity;
+}
+
+void TextureRenderer::SetRippleEffect(float frequency, float amplitude) {
+    m_RippleFreq = frequency;
+    m_RippleAmp = amplitude;
+}
+
+void TextureRenderer::SetDistortionEffect(float amount) {
+    m_Distortion = amount;
+}
+
+void TextureRenderer::SetEdgeGlowEffect(float intensity, float r, float g, float b) {
+    m_EdgeGlowIntensity = intensity;
+    m_EdgeGlowColor[0] = r;
+    m_EdgeGlowColor[1] = g;
+    m_EdgeGlowColor[2] = b;
+}
+
+void TextureRenderer::SetFadeEffect(float amount) {
+    m_FadeAmount = amount;
+}
+
+void TextureRenderer::SetZoomEffect(float amount) {
+    m_ZoomAmount = amount;
+}
+
+void TextureRenderer::SetLightLeakEffect(float intensity) {
+    m_LightLeakIntensity = intensity;
 }
 
 bool TextureRenderer::CompileShader(GLuint shader, const char* source) {

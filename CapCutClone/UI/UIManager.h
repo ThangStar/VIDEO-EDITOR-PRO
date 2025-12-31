@@ -64,12 +64,17 @@ private:
     int m_TrimClipId = -1;
     bool m_IsTrimmingStart = false; // true if trimming start, false if trimming end
     bool m_IsTrimming = false;
+    
+    // Effect Selection
+    int m_SelectedEffectId = -1; // -1 = none selected
 
     // Export State
     class ExportManager* m_ExportManager = nullptr;
     bool m_ShowExportDialog = false;
     bool m_ShowExportProgress = false;
+    bool m_ShowExportSuccess = false;
     float m_ExportProgress = 0.0f;
+    std::string m_LastExportPath = "";
     
     // Export Settings (UI State)
     char m_ExportName[256] = "My Video";
@@ -106,4 +111,8 @@ private:
     bool m_FilterGenerationAttempted = false;
     void LoadDemoImage(); // Load cat.jpg
     void GenerateFilterThumbnails();
+    
+    // Effects Panel State
+    int m_SelectedBlur = -1; // -1 = none, 0-3 = blur types
+    float m_BlurIntensity = 0.5f;
 };

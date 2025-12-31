@@ -24,6 +24,28 @@ public:
 
     void SetFilterParams(float brightness, float contrast, float saturation);
     void SetEffectParams(float vignette, float grain, float aberration, bool sepia);
+    
+    // Advanced Effects (CapCut-like)
+    void SetBlurEffect(float amount, int type = 0); // type: 0=Gaussian, 1=Motion, 2=Radial, 3=Zoom
+    void SetGlitchEffect(float intensity);
+    void SetRippleEffect(float frequency, float amplitude);
+    void SetDistortionEffect(float amount);
+    void SetEdgeGlowEffect(float intensity, float r, float g, float b);
+    void SetFadeEffect(float amount); // 0=none, <0.5=fade in, >0.5=fade out
+    void SetZoomEffect(float amount);
+    void SetLightLeakEffect(float intensity);
+    
+    // Effect Getters
+    float GetBlurAmount() const { return m_BlurAmount; }
+    int GetBlurType() const { return m_BlurType; }
+    float GetGlitchIntensity() const { return m_GlitchIntensity; }
+    float GetRippleFreq() const { return m_RippleFreq; }
+    float GetRippleAmp() const { return m_RippleAmp; }
+    float GetDistortion() const { return m_Distortion; }
+    float GetEdgeGlowIntensity() const { return m_EdgeGlowIntensity; }
+    float GetFadeAmount() const { return m_FadeAmount; }
+    float GetZoomAmount() const { return m_ZoomAmount; }
+    float GetLightLeakIntensity() const { return m_LightLeakIntensity; }
 
     GLuint GetTextureID() const { return m_TextureID; }
     bool IsInitialized() const { return m_Initialized; }
@@ -96,6 +118,19 @@ private:
     float m_Grain;
     float m_Aberration;
     bool m_Sepia;
+    
+    // Advanced Effect Params
+    float m_BlurAmount;
+    int m_BlurType; // 0=Gaussian, 1=Motion, 2=Radial, 3=Zoom
+    float m_GlitchIntensity;
+    float m_RippleFreq;
+    float m_RippleAmp;
+    float m_Distortion;
+    float m_EdgeGlowIntensity;
+    float m_EdgeGlowColor[3]; // RGB
+    float m_FadeAmount;
+    float m_ZoomAmount;
+    float m_LightLeakIntensity;
 
     // Helper methods
     bool CompileShader(GLuint shader, const char* source);

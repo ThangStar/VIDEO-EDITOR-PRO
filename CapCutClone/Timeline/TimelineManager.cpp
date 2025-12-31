@@ -6,6 +6,7 @@ TimelineManager::TimelineManager()
     : m_CurrentTime(0.0)
     , m_VideoPlayer(nullptr)
     , m_NextClipId(1)
+    , m_NextEffectId(1)
     , m_ActiveClip(nullptr)
 {
     // Start with one empty track
@@ -208,4 +209,75 @@ void TimelineManager::SyncVideoPlayer() {
         m_ActiveClip = nullptr;
         // In the future: m_VideoPlayer->Clear();
     }
+}
+
+// ============= EFFECT LAYER MANAGEMENT =============
+
+int TimelineManager::AddEffectLayer(EffectLayer::EffectType type, double startTime, double duration) {
+    int newId = GenerateEffectId();
+    EffectLayer newEffect(newId, type, startTime, duration);
+    m_EffectLayers.push_back(newEffect);
+    
+    std::cout << "[TimelineManager] Added effect layer: " << newEffect.GetEffectName() 
+              << " (ID: " << newId << ", " << startTime << "s - " << (startTime + duration) << "s)" << std::endl;
+    
+    return newId;
+}
+
+void TimelineManager::RemoveEffectLayer(int effectId) {
+    auto it = std::find_if(m_EffectLayers.begin(), m_EffectLayers.end(), 
+        [effectId](const EffectLayer& e) { return e.id == effectId; });
+    
+    if (it != m_EffectLayers.end()) {
+        std::cout << "[TimelineManager] Removed effect layer: " << it->GetEffectName() 
+                  << " (ID: " << effectId << ")" << std::endl;
+        m_EffectLayers.erase(it);
+    }
+}
+
+void TimelineManager::MoveEffectLayer(int effectId, double newStartTime) {
+    auto it = std::find_if(m_EffectLayers.begin(), m_EffectLayers.end(), 
+        [effectId](const EffectLayer& e) { return e.id == effectId; });
+    
+    if (it != m_EffectLayers.end()) {
+        it->startTime = newStartTime;
+        if (it->startTime < 0) it->startTime = 0;
+        
+        std::cout << "[TimelineManager] Moved effect " << it->GetEffectName() 
+                  << " to " << newStartTime << "s" << std::endl;
+    }
+}
+
+void TimelineManager::ResizeEffectLayer(int effectId, double newDuration) {
+    auto it = std::find_if(m_EffectLayers.begin(), m_EffectLayers.end(), 
+        [effectId](const EffectLayer& e) { return e.id == effectId; });
+    
+    if (it != m_EffectLayers.end()) {
+        it->duration = newDuration;
+        if (it->duration < 0.1) it->duration = 0.1; // Minimum 0.1s
+        
+        std::cout << "[TimelineManager] Resized effect " << it->GetEffectName() 
+                  << " to " << newDuration << "s" << std::endl;
+    }
+}
+
+void TimelineManager::UpdateEffectParam(int effectId, const std::string& paramName, float value) {
+    auto it = std::find_if(m_EffectLayers.begin(), m_EffectLayers.end(), 
+        [effectId](const EffectLayer& e) { return e.id == effectId; });
+    
+    if (it != m_EffectLayers.end()) {
+        it->params[paramName] = value;
+    }
+}
+
+std::vector<EffectLayer*> TimelineManager::GetActiveEffects(double time) {
+    std::vector<EffectLayer*> activeEffects;
+    
+    for (auto& effect : m_EffectLayers) {
+        if (effect.IsActiveAtTime(time)) {
+            activeEffects.push_back(&effect);
+        }
+    }
+    
+    return activeEffects;
 }
