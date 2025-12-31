@@ -15,13 +15,13 @@ find_package(imgui CONFIG REQUIRED)
 find_package(unofficial-ffmpeg CONFIG QUIET)
 if(unofficial-ffmpeg_FOUND)
     message(STATUS "Found FFmpeg via unofficial-ffmpeg package")
-    set(FFMPEG_LIBRARIES unofficial::ffmpeg::avformat unofficial::ffmpeg::avcodec unofficial::ffmpeg::avutil unofficial::ffmpeg::swscale)
+    set(FFMPEG_LIBRARIES unofficial::ffmpeg::avformat unofficial::ffmpeg::avcodec unofficial::ffmpeg::avutil unofficial::ffmpeg::swscale unofficial::ffmpeg::swresample)
 else()
     # Fallback: Hardcoded paths for vcpkg
     message(STATUS "Using hardcoded FFmpeg paths for vcpkg")
-    set(FFMPEG_INCLUDE_DIRS "D:/ts-ws/learn_cpp/vcpkg/installed/x64-windows/include")
-    set(FFMPEG_LIBRARY_DIRS "D:/ts-ws/learn_cpp/vcpkg/installed/x64-windows/lib")
-    set(FFMPEG_LIBRARIES avformat avcodec avutil swscale)
+    set(FFMPEG_INCLUDE_DIRS "E:/ts-ws/learn_cpp/vcpkg/installed/x64-windows/include")
+    set(FFMPEG_LIBRARY_DIRS "E:/ts-ws/learn_cpp/vcpkg/installed/x64-windows/lib")
+    set(FFMPEG_LIBRARIES avformat avcodec avutil swscale swresample)
 endif()
 
 
@@ -37,7 +37,9 @@ add_executable(CapCutClone
     CapCutClone/Timeline/EffectLayer.cpp
     CapCutClone/Encoder/VideoEncoder.cpp
     CapCutClone/Configuration.cpp
+    CapCutClone/Configuration.cpp
     CapCutClone/Encoder/ExportManager.cpp
+    CapCutClone/Audio/AudioContext.cpp
 )
 
 # Include directories
@@ -68,6 +70,7 @@ else()
         avformat
         avcodec
         swscale
+        swresample
         avutil
         avutil  # Link twice to resolve circular dependencies
     )

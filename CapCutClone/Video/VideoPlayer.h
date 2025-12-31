@@ -10,7 +10,10 @@ extern "C" {
 #include <libavutil/avutil.h>
 #include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
+#include <libswresample/swresample.h>
 }
+
+#include "../Audio/AudioContext.h"
 
 class VideoPlayer {
 public:
@@ -39,17 +42,21 @@ private:
     // FFmpeg structures  
     AVFormatContext* m_FormatContext;
     AVCodecContext* m_CodecContext;  // Video codec
+    AVCodecContext* m_AudioCodecContext; // Audio codec
     SwsContext* m_SwsContext;  // Video scaler
+    SwrContext* m_SwrContext;  // Audio resampler
     AVBufferRef* m_HardwareDeviceContext; // GPU Device Context
     
     // Frames
     AVFrame* m_Frame;  // Video frame
     AVFrame* m_FrameRGB;  // Converted RGB frame
+    AVFrame* m_AudioFrame; // Audio frame
     AVPacket* m_Packet;
     uint8_t* m_Buffer;  // Video buffer
     
     // Video properties
     int m_VideoStreamIndex;
+    int m_AudioStreamIndex;
     int m_Width;
     int m_Height;
     double m_Duration;
@@ -62,4 +69,7 @@ private:
 
     // Helper methods
     void Cleanup();
+
+    // Audio Subsystem
+    AudioContext m_AudioContext;
 };
