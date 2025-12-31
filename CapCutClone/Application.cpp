@@ -2,6 +2,7 @@
 #include "UI/UIManager.h"
 #include "Video/VideoPlayer.h"
 #include "Rendering/TextureRenderer.h"
+#include "Configuration.h"
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
@@ -35,6 +36,16 @@ bool Application::Initialize() {
         std::cout << "Failed to initialize GLFW!" << std::endl;
         return false;
     }
+
+    // Load Configuration
+    // Try to load from local file, or parent directory
+    if (!Configuration::GetInstance().Load("config.ini")) {
+        Configuration::GetInstance().Load("../config.ini");
+    }
+
+    // No hardcoded defaults in code as per request.
+    // relying on config.ini being present and correct.
+
 
     // Initialize GLAD
     if (!InitializeGLAD()) {
@@ -194,12 +205,45 @@ bool Application::InitializeImGui() {
     // Attempt to load FontAwesome. Make sure the path is correct relative to execution or absolute.
     // Assuming assets are next to exe or in project root. Trying project root first since prompt implies dev environment.
     // Ideally we use a relative path like "./Assets/Fonts/..."
-    io.Fonts->AddFontFromFileTTF("d:\\ts-ws\\CapCutClone\\CapCutClone\\Assets\\Fonts\\fa-solid-900.ttf", 16.0f, &icons_config, icons_ranges);
+    // Attempt to load FontAwesome using Config
+    std::string configFontPath = Configuration::GetInstance().GetString("FontPath");
+    if (configFontPath.empty()) configFontPath = "Assets/Fonts/fa-solid-900.ttf";
+
+    // Robust search for the font file
+    std::vector<std::string> searchPrefixes = {
+        "",
+        "../",
+        "../CapCutClone/",
+        "../../",
+        "../../CapCutClone/"
+    };
+
+    std::string finalFontPath = configFontPath;
+    bool fontFound = false;
+
+    for (const auto& prefix : searchPrefixes) {
+        std::string testPath = prefix + configFontPath;
+        FILE* f = nullptr;
+        if (fopen_s(&f, testPath.c_str(), "rb") == 0 && f) {
+            fclose(f);
+            finalFontPath = testPath;
+            fontFound = true;
+            std::cout << "[Application] Found font at: " << finalFontPath << std::endl;
+            break;
+        }
+    }
+
+    if (!fontFound) {
+        std::cerr << "[Application] Warning: Font file not found: " << configFontPath << " (searched relative paths)" << std::endl;
+    }
+    
+    // Load config path (or discovered path)
+    io.Fonts->AddFontFromFileTTF(finalFontPath.c_str(), 16.0f, &icons_config, icons_ranges);
     
     // Load separate high-res font for sidebar icons
     ImFontConfig large_icons_config; 
     large_icons_config.PixelSnapH = true;
-    io.Fonts->AddFontFromFileTTF("d:\\ts-ws\\CapCutClone\\CapCutClone\\Assets\\Fonts\\fa-solid-900.ttf", 24.0f, &large_icons_config, icons_ranges);
+    io.Fonts->AddFontFromFileTTF(finalFontPath.c_str(), 24.0f, &large_icons_config, icons_ranges);
 
     // Setup Dear ImGui style
     ImGui::StyleColorsDark();

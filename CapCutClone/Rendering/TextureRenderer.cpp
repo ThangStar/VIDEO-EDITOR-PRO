@@ -39,10 +39,27 @@ uniform float vignette;    // 0.0 to 1.0
 uniform float grain;       // 0.0 to 1.0
 uniform float aberration;  // 0.0 to 0.05
 uniform int sepia;         // 0 or 1
+uniform int filterType;    // 0=None, 1=LightGreen, 2=80s, 3=Milky, etc.
 uniform float time;        // For animated grain
 
 float rand(vec2 co){
     return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453);
+}
+
+// Color conversion helpers
+vec3 rgb2hsv(vec3 c) {
+    vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+    vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+    vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+    float d = q.x - min(q.w, q.y);
+    float e = 1.0e-10;
+    return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
 
 void main() {
@@ -57,6 +74,85 @@ void main() {
         texColor = vec3(r, g, b);
     } else {
         texColor = texture(texture1, uv).rgb;
+    }
+    
+    // --- FILTERS ---
+    if (filterType == 1) { // Light Green
+        // Tint green, slightly faded
+        texColor = mix(texColor, vec3(0.8, 1.0, 0.8) * dot(texColor, vec3(0.33)), 0.3);
+        texColor *= vec3(0.9, 1.1, 0.9); 
+    }
+    else if (filterType == 2) { // 80s Holiday
+        // Warm, slightly saturated, pinkish highlight
+        texColor = texColor * vec3(1.1, 0.9, 0.9);
+        texColor = mix(texColor, vec3(1.0, 0.8, 0.8), 0.1);
+    }
+    else if (filterType == 3) { // Milky Tone
+        // Low contrast, bright, whiter
+        texColor = (texColor - 0.5) * 0.8 + 0.5; // low contrast
+        texColor += 0.1; // brightness
+        texColor = mix(texColor, vec3(1.0), 0.1); // milky
+    }
+    else if (filterType == 4) { // Cinematic Dusk
+        // Teal/Orange look basic
+        vec3 gray = vec3(dot(texColor, vec3(0.299, 0.587, 0.114)));
+        texColor = mix(gray, texColor, 1.2); // boost sat
+        texColor *= vec3(0.9, 0.95, 1.1); // cool shadows
+        texColor += vec3(0.1, 0.05, 0.0); // warm highlights simulation (simple)
+    }
+    else if (filterType == 5) { // Ice City
+        // Cool blue, high contrast
+        texColor = (texColor - 0.5) * 1.2 + 0.5;
+        texColor *= vec3(0.8, 0.9, 1.1);
+    }
+    else if (filterType == 6) { // Flash CCD
+        // High exposure, bloom-like
+        texColor = (texColor - 0.5) * 1.3 + 0.6;
+    }
+    else if (filterType == 7) { // LA Classic
+        // Warm, sunny, vintage
+        texColor *= vec3(1.1, 1.0, 0.8);
+        texColor -= 0.05;
+    }
+    else if (filterType == 8) { // Warlock
+        // Dark, green/purple tint
+        texColor = (texColor - 0.5) * 1.3 + 0.4;
+        texColor *= vec3(0.9, 1.1, 0.8);
+    }
+    else if (filterType == 9) { // Brighten Up
+        texColor += 0.15;
+        texColor *= 1.1;
+    }
+    else if (filterType == 10) { // Hollywood Past
+        // B&W high contrast
+        float g = dot(texColor, vec3(0.299, 0.587, 0.114));
+        texColor = vec3((g - 0.5) * 1.5 + 0.5);
+    }
+    else if (filterType == 11) { // Fade
+        // Low saturation, raised blacks
+        float g = dot(texColor, vec3(0.299, 0.587, 0.114));
+        texColor = mix(vec3(g), texColor, 0.6);
+        texColor = texColor * 0.8 + 0.1; // lift blacks
+    }
+    else if (filterType == 12) { // Maldives
+        // Aqua boost
+        texColor *= vec3(0.9, 1.2, 1.2);
+        texColor = (texColor - 0.5) * 1.1 + 0.5;
+    }
+    else if (filterType == 13) { // Clear
+        // Neutral clean
+        texColor = (texColor - 0.5) * 1.05 + 0.5;
+        texColor *= 1.05;
+    }
+    else if (filterType == 14) { // Azure Morning
+        // Soft blue tint
+        texColor = mix(texColor, vec3(0.8, 0.9, 1.0), 0.15);
+        texColor *= 1.1;
+    }
+    else if (filterType == 15) { // Hasselblad
+        // Natural, deep properties
+        texColor = (texColor - 0.5) * 1.1 + 0.5;
+        texColor *= vec3(1.05, 1.02, 1.0);
     }
     
     // Brightness
@@ -112,12 +208,21 @@ TextureRenderer::TextureRenderer()
     , m_FBO(0)
     , m_FBOTexture(0)
     , m_RBO(0)
+    , m_PreviewFBO(0)
+    , m_PreviewTexture(0)
+    , m_PreviewWidth(0)
+    , m_PreviewHeight(0)
     , m_FlipY(false)
+    , m_FilterType(0)
 {
 }
 
 void TextureRenderer::SetFlipY(bool flip) {
     m_FlipY = flip;
+}
+
+void TextureRenderer::SetFilterType(int type) {
+    m_FilterType = type;
 }
 
 // ... (Initialize/Cleanup remains similar, but need to clean FBOs too)
@@ -131,6 +236,7 @@ void TextureRenderer::CopySettingsFrom(const TextureRenderer* other) {
     m_Grain = other->m_Grain;
     m_Aberration = other->m_Aberration;
     m_Sepia = other->m_Sepia;
+    m_FilterType = other->m_FilterType;
 }
 
 bool TextureRenderer::CreateFramebuffer(int width, int height) {
@@ -169,15 +275,6 @@ bool TextureRenderer::CreateFramebuffer(int width, int height) {
 
 void TextureRenderer::BindFramebuffer() {
     glBindFramebuffer(GL_FRAMEBUFFER, m_FBO);
-    // Viewport must match FBO size
-    // We assume the caller or RenderTexture sets viewport via projection, 
-    // but typically we should set glViewport here. 
-    // However, RenderTexture uses hardcoded projection logic based on 1280x720 in shader?
-    // Wait, shader projection matches 1280x720 logic. 
-    // If output is 1920x1080, we need to ensure shader projection works?
-    // The current shader hardcodes: 2.0f / 1280.0f... this IS A PROBLEM for variable resolution export.
-    // I should fix RenderTexture projection matrix construction to use arguments or member vars.
-    // For now, let's assume glViewport is handled by caller or we add it.
 }
 
 void TextureRenderer::UnbindFramebuffer() {
@@ -223,6 +320,11 @@ void TextureRenderer::Cleanup() {
     if (m_VBO) { glDeleteBuffers(1, &m_VBO); m_VBO = 0; }
     if (m_EBO) { glDeleteBuffers(1, &m_EBO); m_EBO = 0; }
     if (m_ShaderProgram) { glDeleteProgram(m_ShaderProgram); m_ShaderProgram = 0; }
+    
+    // Cleanup preview FBO
+    if (m_PreviewFBO) { glDeleteFramebuffers(1, &m_PreviewFBO); m_PreviewFBO = 0; }
+    if (m_PreviewTexture) { glDeleteTextures(1, &m_PreviewTexture); m_PreviewTexture = 0; }
+    
     m_Initialized = false;
 }
 
@@ -270,6 +372,7 @@ void TextureRenderer::RenderTexture(float x, float y, float width, float height)
     if ((loc = glGetUniformLocation(m_ShaderProgram, "grain")) >= 0) glUniform1f(loc, m_Grain);
     if ((loc = glGetUniformLocation(m_ShaderProgram, "aberration")) >= 0) glUniform1f(loc, m_Aberration);
     if ((loc = glGetUniformLocation(m_ShaderProgram, "sepia")) >= 0) glUniform1i(loc, m_Sepia ? 1 : 0);
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "filterType")) >= 0) glUniform1i(loc, m_FilterType);
     if ((loc = glGetUniformLocation(m_ShaderProgram, "time")) >= 0) glUniform1f(loc, (float)glfwGetTime());
 
     // Dynamic projection based on render dimensions
@@ -310,6 +413,191 @@ void TextureRenderer::RenderTexture(float x, float y, float width, float height)
     glBindVertexArray(0);
 }
 
+GLuint TextureRenderer::GenerateFilterThumbnail(GLuint inputTex, int filterType, int width, int height) {
+    if (!m_Initialized || !inputTex) return 0;
+    
+    // Save current state
+    GLint oldViewport[4];
+    glGetIntegerv(GL_VIEWPORT, oldViewport);
+    GLint oldFBO;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &oldFBO);
+    
+    GLuint fbo, tex; // Temporary FBO
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+    
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        std::cerr << "[TextureRenderer] Failed to create FBO for filter thumbnail!" << std::endl;
+        glBindFramebuffer(GL_FRAMEBUFFER, oldFBO);
+        glViewport(oldViewport[0], oldViewport[1], oldViewport[2], oldViewport[3]);
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &tex);
+        return 0;
+    }
+    
+    // Set viewport and clear
+    glViewport(0, 0, width, height);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    
+    glUseProgram(m_ShaderProgram);
+    
+    // Set Uniforms - Only enable the specific filter loop
+    GLint loc;
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "alpha")) >= 0) glUniform1f(loc, 1.0f);
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "brightness")) >= 0) glUniform1f(loc, 0.0f);
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "contrast")) >= 0) glUniform1f(loc, 1.0f);
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "saturation")) >= 0) glUniform1f(loc, 1.0f);
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "vignette")) >= 0) glUniform1f(loc, 0.0f); // Default values
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "grain")) >= 0) glUniform1f(loc, 0.0f);
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "aberration")) >= 0) glUniform1f(loc, 0.0f);
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "sepia")) >= 0) glUniform1i(loc, 0);
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "filterType")) >= 0) glUniform1i(loc, filterType);
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "time")) >= 0) glUniform1f(loc, 0.0f);
+    
+    // Standard projection (Non-flipped for FBO internal storage usually)
+    float projection[16] = {
+        2.0f / width, 0.0f, 0.0f, 0.0f,
+        0.0f, 2.0f / height, 0.0f, 0.0f, // Positive Y because texture coords will match
+        0.0f, 0.0f, -1.0f, 0.0f,
+        -1.0f, -1.0f, 0.0f, 1.0f
+    };
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "projection")) >= 0) glUniformMatrix4fv(loc, 1, GL_FALSE, projection);
+
+    // Full screen quad
+    float vertices[] = {
+        0.0f, 0.0f,          0.0f, 0.0f, // Use standard UVs
+        (float)width, 0.0f,  1.0f, 0.0f,
+        (float)width, (float)height, 1.0f, 1.0f,
+        0.0f, (float)height, 0.0f, 1.0f
+    };
+    
+    glBindBuffer(GL_ARRAY_BUFFER, m_VBO);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(vertices), vertices);
+    
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, inputTex);
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "texture1")) >= 0) glUniform1i(loc, 0);
+    
+    glBindVertexArray(m_VAO);
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+    
+    // Restore state
+    glBindFramebuffer(GL_FRAMEBUFFER, oldFBO);
+    glViewport(oldViewport[0], oldViewport[1], oldViewport[2], oldViewport[3]);
+    glDeleteFramebuffers(1, &fbo);
+   
+    return tex;
+}
+
+GLuint TextureRenderer::GetFilteredTextureID(int width, int height) {
+    if (!m_Initialized || !m_TextureID) return m_TextureID; // Fallback to original
+    
+    // Recreate if size changed or FBO doesn't exist
+    if (!m_PreviewFBO || m_PreviewWidth != width || m_PreviewHeight != height) {
+        if (m_PreviewFBO) {
+            glDeleteFramebuffers(1, &m_PreviewFBO);
+            glDeleteTextures(1, &m_PreviewTexture);
+            m_PreviewFBO = 0;
+            m_PreviewTexture = 0;
+        }
+        
+        glGenFramebuffers(1, &m_PreviewFBO);
+        glBindFramebuffer(GL_FRAMEBUFFER, m_PreviewFBO);
+        
+        glGenTextures(1, &m_PreviewTexture);
+        glBindTexture(GL_TEXTURE_2D, m_PreviewTexture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_PreviewTexture, 0);
+        
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            std::cerr << "[TextureRenderer] Failed to create preview FBO" << std::endl;
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            return m_TextureID;
+        }
+        
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        m_PreviewWidth = width;
+        m_PreviewHeight = height;
+    }
+    
+    // Save current OpenGL state
+    GLint oldViewport[4];
+    glGetIntegerv(GL_VIEWPORT, oldViewport);
+    GLint oldFBO;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &oldFBO);
+    
+    // Bind our preview FBO
+    glBindFramebuffer(GL_FRAMEBUFFER, m_PreviewFBO);
+    glViewport(0, 0, width, height);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    
+    // Render texture with filter
+    glUseProgram(m_ShaderProgram);
+    
+    // Set all uniforms with current filter settings
+    GLint loc;
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "alpha")) >= 0) glUniform1f(loc, 1.0f);
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "brightness")) >= 0) glUniform1f(loc, m_Brightness);
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "contrast")) >= 0) glUniform1f(loc, m_Contrast);
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "saturation")) >= 0) glUniform1f(loc, m_Saturation);
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "vignette")) >= 0) glUniform1f(loc, m_Vignette);
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "grain")) >= 0) glUniform1f(loc, m_Grain);
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "aberration")) >= 0) glUniform1f(loc, m_Aberration);
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "sepia")) >= 0) glUniform1i(loc, m_Sepia ? 1 : 0);
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "filterType")) >= 0) glUniform1i(loc, m_FilterType);
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "time")) >= 0) glUniform1f(loc, (float)glfwGetTime());
+    
+    // Projection matrix for FBO
+    float projection[16] = {
+        2.0f / width, 0.0f, 0.0f, 0.0f,
+        0.0f, 2.0f / height, 0.0f, 0.0f,
+        0.0f, 0.0f, -1.0f, 0.0f,
+        -1.0f, -1.0f, 0.0f, 1.0f
+    };
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "projection")) >= 0) glUniformMatrix4fv(loc, 1, GL_FALSE, projection);
+    
+    // Full screen quad
+    float vertices[] = {
+        0.0f, 0.0f,          0.0f, 0.0f,
+        (float)width, 0.0f,  1.0f, 0.0f,
+        (float)width, (float)height, 1.0f, 1.0f,
+        0.0f, (float)height, 0.0f, 1.0f
+    };
+    
+    glBindBuffer(GL_ARRAY_BUFFER, m_VBO);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(vertices), vertices);
+    
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, m_TextureID);
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "texture1")) >= 0) glUniform1i(loc, 0);
+    
+    glBindVertexArray(m_VAO);
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+    glBindVertexArray(0);
+    
+    // Restore state
+    glBindFramebuffer(GL_FRAMEBUFFER, oldFBO);
+    glViewport(oldViewport[0], oldViewport[1], oldViewport[2], oldViewport[3]);
+    
+    return m_PreviewTexture;
+}
+
+
 void TextureRenderer::RenderOverlay(unsigned int textureID, float x, float y, float w, float h, float rotation, float opacity) {
     if (!m_Initialized || !textureID) return;
     
@@ -330,6 +618,7 @@ void TextureRenderer::RenderOverlay(unsigned int textureID, float x, float y, fl
     if ((loc = glGetUniformLocation(m_ShaderProgram, "grain")) >= 0) glUniform1f(loc, 0.0f);
     if ((loc = glGetUniformLocation(m_ShaderProgram, "aberration")) >= 0) glUniform1f(loc, 0.0f);
     if ((loc = glGetUniformLocation(m_ShaderProgram, "sepia")) >= 0) glUniform1i(loc, 0);
+    if ((loc = glGetUniformLocation(m_ShaderProgram, "filterType")) >= 0) glUniform1i(loc, 0); // No filter for overlays
 
     float projection[16] = {
         2.0f / 1280.0f, 0.0f, 0.0f, 0.0f,

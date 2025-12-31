@@ -35,6 +35,7 @@ add_executable(CapCutClone
     CapCutClone/Rendering/TextureRenderer.cpp
     CapCutClone/Timeline/TimelineManager.cpp
     CapCutClone/Encoder/VideoEncoder.cpp
+    CapCutClone/Configuration.cpp
     CapCutClone/Encoder/ExportManager.cpp
 )
 

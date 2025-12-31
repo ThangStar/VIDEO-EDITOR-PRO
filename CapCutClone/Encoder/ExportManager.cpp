@@ -37,6 +37,12 @@ ExportManager::~ExportManager() {
 bool ExportManager::StartExport(const std::string& outputFile, int width, int height, int fps) {
     if (m_IsExporting) return false;
 
+    // CRITICAL: Wait for previous export thread to finish completely
+    if (m_ExportThread.joinable()) {
+        m_ExportThread.join();
+    }
+
+    // Now safe to destroy offscreen window
     if (m_OffscreenWindow) {
         glfwDestroyWindow(m_OffscreenWindow);
         m_OffscreenWindow = nullptr;
@@ -116,52 +122,57 @@ void ExportManager::ExportThreadFunc(std::string outputFile, int width, int heig
     GLsync fences[2] = {nullptr, nullptr}; // Sync objects for each PBO
 
     if (m_OffscreenWindow) {
-         glfwMakeContextCurrent(m_OffscreenWindow);
-         glViewport(0, 0, width, height);
-         
-         if (gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
-              renderer = new TextureRenderer();
-              if (renderer->Initialize()) {
-                 renderer->CreateFramebuffer(width, height);
-                 renderer->SetFlipY(false); // Disable flip to fix vertical orientation issue
-                 
-                 renderer->SetFilterParams(m_EffectParams.brightness, m_EffectParams.contrast, m_EffectParams.saturation);
-                 renderer->SetEffectParams(m_EffectParams.vignette, m_EffectParams.grain, m_EffectParams.aberration, m_EffectParams.sepia);
-                 
-                 glPixelStorei(GL_PACK_ALIGNMENT, 1);
-                 glGenBuffers(2, m_PBOs);
-                 
-                 // CRITICAL FIX: Add padding for PBOs
-                 // sws_scale optimized SIMD instructions may read slightly past end of line/buffer
-                 // Adding extra bytes prevents SegFaults on strict driver memory
-                 size_t bufferSize = (size_t)width * height * 3 + 4096; 
-                 
-                 glBindBuffer(GL_PIXEL_PACK_BUFFER, m_PBOs[0]);
-                 glBufferData(GL_PIXEL_PACK_BUFFER, bufferSize, nullptr, GL_STREAM_READ);
-                 glBindBuffer(GL_PIXEL_PACK_BUFFER, m_PBOs[1]);
-                 glBufferData(GL_PIXEL_PACK_BUFFER, bufferSize, nullptr, GL_STREAM_READ);
-                 glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-                 
-                 // Check for GL errors
-                 GLenum err = glGetError();
-                 if (err != GL_NO_ERROR) {
-                     std::cerr << "[ExportManager] OpenGL Error during PBO init: " << err << std::endl;
-                     glDeleteBuffers(2, m_PBOs);
-                 } else {
-                     usingPBO = true;
-                     std::cout << "[ExportManager] PBOs initialized (" << bufferSize << " bytes each)" << std::endl;
-                 }
-              } else {
-                  std::cerr << "[ExportManager] Renderer Initialize failed." << std::endl;
+          glfwMakeContextCurrent(m_OffscreenWindow);
+          glViewport(0, 0, width, height);
+          std::cout << "[ExportManager] OpenGL context activated" << std::endl;
+          
+          if (gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+               std::cout << "[ExportManager] GLAD loaded successfully" << std::endl;
+               renderer = new TextureRenderer();
+               if (renderer->Initialize()) {
+                  std::cout << "[ExportManager] Renderer initialized successfully" << std::endl;
+                  renderer->CreateFramebuffer(width, height);
+                  renderer->SetFlipY(false); // Disable flip to fix vertical orientation issue
+                  
+                  renderer->SetFilterParams(m_EffectParams.brightness, m_EffectParams.contrast, m_EffectParams.saturation);
+                  renderer->SetEffectParams(m_EffectParams.vignette, m_EffectParams.grain, m_EffectParams.aberration, m_EffectParams.sepia);
+                  renderer->SetFilterType(m_EffectParams.filterType); // Apply filter for export
+                  std::cout << "[ExportManager] Renderer configured with filterType=" << m_EffectParams.filterType << std::endl;
+                  
+                  glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                  glGenBuffers(2, m_PBOs);
+                  
+                  // CRITICAL FIX: Add padding for PBOs
+                  // sws_scale optimized SIMD instructions may read slightly past end of line/buffer
+                  // Adding extra bytes prevents SegFaults on strict driver memory
+                  size_t bufferSize = (size_t)width * height * 3 + 4096; 
+                  
+                  glBindBuffer(GL_PIXEL_PACK_BUFFER, m_PBOs[0]);
+                  glBufferData(GL_PIXEL_PACK_BUFFER, bufferSize, nullptr, GL_STREAM_READ);
+                  glBindBuffer(GL_PIXEL_PACK_BUFFER, m_PBOs[1]);
+                  glBufferData(GL_PIXEL_PACK_BUFFER, bufferSize, nullptr, GL_STREAM_READ);
+                  glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+                  
+                  // Check for GL errors
+                  GLenum err = glGetError();
+                  if (err != GL_NO_ERROR) {
+                      std::cerr << "[ExportManager] OpenGL Error during PBO init: " << err << std::endl;
+                      glDeleteBuffers(2, m_PBOs);
+                  } else {
+                      usingPBO = true;
+                      std::cout << "[ExportManager] PBOs initialized (" << bufferSize << " bytes each)" << std::endl;
+                  }
+               } else {
+                  std::cerr << "[ExportManager] Renderer Initialize failed!" << std::endl;
                   delete renderer;
                   renderer = nullptr;
-              }
-         } else {
-             std::cerr << "[ExportManager] GLAD Init failed in export thread." << std::endl;
-         }
-    } else {
-        std::cerr << "[ExportManager] WARNING: No Offscreen Window. PBO Disabled." << std::endl;
-    }
+               }
+          } else {
+              std::cerr << "[ExportManager] GLAD Init failed in export thread!" << std::endl;
+          }
+     } else {
+         std::cerr << "[ExportManager] WARNING: No Offscreen Window. PBO Disabled." << std::endl;
+     }
 
     VideoPlayer tempPlayer;
     std::string currentLoadedFile = "";
@@ -208,11 +219,14 @@ void ExportManager::ExportThreadFunc(std::string outputFile, int width, int heig
                 const uint8_t* data = tempPlayer.GetFrameData(); 
                 
                 if (data && renderer) {
-                    static int lastTexW = 0, lastTexH = 0;
-                    if (tempPlayer.GetWidth() != lastTexW || tempPlayer.GetHeight() != lastTexH) {
-                        renderer->CreateTexture(tempPlayer.GetWidth(), tempPlayer.GetHeight());
-                        lastTexW = tempPlayer.GetWidth();
-                        lastTexH = tempPlayer.GetHeight();
+                    // Check if we need to create/recreate texture
+                    // Use local variables per export session, not static!
+                    if (tempPlayer.GetWidth() > 0 && tempPlayer.GetHeight() > 0) {
+                        // Always create texture on first frame (i==0) or if size changed
+                        if (i == 0 || renderer->GetTextureID() == 0) {
+                            std::cout << "[ExportManager] Creating texture " << tempPlayer.GetWidth() << "x" << tempPlayer.GetHeight() << std::endl;
+                            renderer->CreateTexture(tempPlayer.GetWidth(), tempPlayer.GetHeight());
+                        }
                     }
                     // Update Texture with new frame data!
                     renderer->UpdateTexture(tempPlayer.GetFrameData(), tempPlayer.GetWidth(), tempPlayer.GetHeight());
@@ -347,24 +361,24 @@ void ExportManager::ExportThreadFunc(std::string outputFile, int width, int heig
 
     // Cleanup
     if (usingPBO) {
-        // Delete any remaining fences
+        // Delete any remaining fences (already done in loop above, so just make sure)
         for (int i = 0; i < 2; i++) {
             if (fences[i] != nullptr) {
                 glDeleteSync(fences[i]);
+                fences[i] = nullptr;
             }
         }
-    }
-    // Cleanup PBOs
-    if (usingPBO) {
+        // Cleanup PBOs
         glDeleteBuffers(2, m_PBOs);
-        if (fences[0]) glDeleteSync(fences[0]);
-        if (fences[1]) glDeleteSync(fences[1]);
     }
 
+    // Cleanup renderer BEFORE unbinding context (OpenGL calls need valid context!)
     if (renderer) {
         delete renderer;
+        renderer = nullptr;
     }
     
+    // NOW safe to unbind context
     glfwMakeContextCurrent(nullptr);
 
     localEncoder->Finalize();

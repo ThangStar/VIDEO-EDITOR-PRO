@@ -1,5 +1,6 @@
 #define NOMINMAX
 #include "UIManager.h"
+#include <iostream>
 #include "../Video/VideoPlayer.h"
 #include "../Rendering/TextureRenderer.h"
 #include "../Application.h"
@@ -8,6 +9,15 @@
 #include "../Timeline/Track.h"
 #include "../Timeline/Clip.h"
 #include "../Encoder/ExportManager.h"
+
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libswscale/swscale.h>
+#include <libavutil/imgutils.h>
+}
+
+#include "Configuration.h"
 #include <imgui.h>
 // #define IMGUI_DEFINE_MATH_OPERATORS
 // #include <imgui_internal.h>
@@ -62,6 +72,7 @@ UIManager::UIManager()
     , m_TimelineThumbnails(nullptr)
     , m_TimelineManager(nullptr)
     , m_ExportManager(nullptr)
+    , m_FilterGenerationAttempted(false)
     , m_IsPlaying(false)
     , m_CurrentTime(0.0f)
     , m_TotalDuration(330.0f)
@@ -266,35 +277,82 @@ void UIManager::RenderMediaPanel(float x, float y, float w, float h) {
         ImGui::Button("Party", ImVec2(60, 24));
         ImGui::Separator();
         
-        // Content Grid
-        float itemSz = 80;
-        int cols = (int)(ImGui::GetContentRegionAvail().x / (itemSz + 10));
-        if (cols < 1) cols = 1;
-        
-        if (ImGui::BeginTable("EffectGrid", cols)) {
-             const char* effNames[] = { "Vignette", "Grain", "Aberration", "Sepia", "Glow", "Blur" };
-             for(int i=0; i<6; i++) {
-                 ImGui::TableNextColumn();
-                 ImGui::PushID(i);
-                 if(ImGui::Button("##Eff", ImVec2(itemSz, itemSz))) {
-                     // Apply effect logic
-                     if(m_TextureRenderer) {
-                         if(i==0) m_TextureRenderer->SetEffectParams(0.5f, 0, 0, false);
-                         if(i==1) m_TextureRenderer->SetEffectParams(0, 0.5f, 0, false);
-                         if(i==2) m_TextureRenderer->SetEffectParams(0, 0, 0.015f, false);
-                         if(i==3) m_TextureRenderer->SetEffectParams(0, 0, 0, true);
+        if (activeTab == 6) { // FILTERS TAB
+            // Generate Thumbnails if needed
+            if (m_FilterThumbnails.empty() && !m_FilterGenerationAttempted) {
+                m_FilterGenerationAttempted = true;
+                LoadDemoImage();
+                GenerateFilterThumbnails();
+            }
+
+            float itemSz = 90;
+            int cols = (int)(ImGui::GetContentRegionAvail().x / (itemSz + 10));
+            if (cols < 2) cols = 2;
+
+            if (ImGui::BeginTable("FilterGrid", cols)) {
+                // Filter definitions
+                const char* filterNames[] = { 
+                    "Normal", "Light Green", "80s Holiday", "Milky Tone", 
+                    "Cinematic Dusk", "Ice City", "Flash CCD", "LA Classic", 
+                    "Warlock", "Brighten Up", "Hollywood Past", "Fade", 
+                    "Maldives", "Clear", "Azure Morning", "Hasselblad" 
+                };
+                int filterCount = 16;
+                // Reuse size of filter thumbnails if matches
+                if (m_FilterThumbnails.size() < (size_t)filterCount) filterCount = (int)m_FilterThumbnails.size();
+
+                for(int i=0; i<filterCount; i++) {
+                    ImGui::TableNextColumn();
+                    ImGui::PushID(i);
+                    
+                    // Filter Card
+                    ImVec2 pMin = ImGui::GetCursorScreenPos();
+                    // Image Button
+                    if (ImGui::ImageButton("##filterBtn", (ImTextureID)(intptr_t)m_FilterThumbnails[i], ImVec2(itemSz, itemSz))) {
+                         // Apply Filter
+                         if (m_TextureRenderer) {
+                             m_TextureRenderer->SetFilterType(i); // 0 = Normal
+                             std::cout << "[UIManager] Applied filter: " << filterNames[i] << " (index " << i << ")" << std::endl;
+                         }
+                    }
+                    
+                    // Selection Highlight
+                    if (m_TextureRenderer && m_TextureRenderer->GetFilterType() == i) {
+                        ImGui::GetWindowDrawList()->AddRect(pMin, pMin + ImVec2(itemSz, itemSz) + ImVec2(5,5), IM_COL32(0, 200, 215, 255), 4.0f, 0, 3.0f);
+                    }
+                    
+                    ImGui::TextWrapped("%s", filterNames[i]);
+                    ImGui::PopID();
+                }
+                ImGui::EndTable();
+            }
+        } 
+        else { // EFFECTS TAB (Old Mockup)
+            // ... (Keep existing simple Logic for Effects if needed, or replace)
+             // Content Grid
+            float itemSz = 80;
+            int cols = (int)(ImGui::GetContentRegionAvail().x / (itemSz + 10));
+            if (cols < 1) cols = 1;
+            
+            if (ImGui::BeginTable("EffectGrid", cols)) {
+                 const char* effNames[] = { "Vignette", "Grain", "Aberration", "Sepia", "Glow", "Blur" };
+                 for(int i=0; i<6; i++) {
+                     ImGui::TableNextColumn();
+                     ImGui::PushID(i);
+                     if(ImGui::Button("##Eff", ImVec2(itemSz, itemSz))) {
+                         // Apply effect logic
+                         if(m_TextureRenderer) {
+                             if(i==0) m_TextureRenderer->SetEffectParams(0.5f, 0, 0, false);
+                             if(i==1) m_TextureRenderer->SetEffectParams(0, 0.5f, 0, false);
+                             if(i==2) m_TextureRenderer->SetEffectParams(0, 0, 0.015f, false);
+                             if(i==3) m_TextureRenderer->SetEffectParams(0, 0, 0, true);
+                         }
                      }
+                     ImGui::TextWrapped("%s", effNames[i]);
+                     ImGui::PopID();
                  }
-                 // Overlay download icon
-                 ImVec2 pMin = ImGui::GetItemRectMin();
-                 ImVec2 pMax = ImGui::GetItemRectMax();
-                 ImGui::GetWindowDrawList()->AddRectFilled(pMax - ImVec2(20,20), pMax, IM_COL32(0,0,0,150));
-                 ImGui::GetWindowDrawList()->AddText(pMax - ImVec2(16,18), IM_COL32(255,255,255,255), ICON_FA_DOWNLOAD);
-                 
-                 ImGui::TextWrapped("%s", effNames[i]);
-                 ImGui::PopID();
-             }
-             ImGui::EndTable();
+                 ImGui::EndTable();
+            }
         }
     }
     else {
@@ -356,7 +414,9 @@ void UIManager::RenderPreviewPanel(float x, float y, float w, float h) {
     // Draw Video
     if (m_VideoPlayer && m_VideoPlayer->IsLoaded() && m_TextureRenderer) {
         ImGui::SetCursorPos(ImVec2(offsetX, offsetY));
-        ImGui::Image((ImTextureID)(intptr_t)m_TextureRenderer->GetTextureID(), ImVec2(previewW, previewH));
+        // Use filtered texture ID so filters are applied in preview
+        GLuint previewTexture = m_TextureRenderer->GetFilteredTextureID((int)previewW, (int)previewH);
+        ImGui::Image((ImTextureID)(intptr_t)previewTexture, ImVec2(previewW, previewH));
     } else {
         // Placeholder
         ImGui::SetCursorPos(ImVec2(offsetX, offsetY));
@@ -936,6 +996,7 @@ void UIManager::RenderExportDialog() {
                     params.grain = m_TextureRenderer->GetGrain();
                     params.aberration = m_TextureRenderer->GetAberration();
                     params.sepia = m_TextureRenderer->GetSepia();
+                    params.filterType = m_TextureRenderer->GetFilterType(); // Include active filter!
                     m_ExportManager->SetEffectParams(params);
                 }
                 
@@ -996,3 +1057,186 @@ void UIManager::OnVideoLoaded(const std::string& filepath) {
     }
 }
 void UIManager::OnOpenVideoClicked() {}
+
+// Helper Methods Implementation
+
+void UIManager::LoadDemoImage() {
+    if (m_DemoImageTexture != 0) return; // Already loaded
+
+    // Try to get path from Configuration first
+    std::string configPath = Configuration::GetInstance().GetString("DemoImagePath");
+    if (configPath.empty()) configPath = "Assets/Images/cat.jpg";
+
+    // Robust search logic (matching Application.cpp)
+    std::vector<std::string> searchPrefixes = {
+        "",
+        "../",
+        "../CapCutClone/",
+        "../../",
+        "../../CapCutClone/",
+        "CapCutClone/" 
+    };
+
+    std::string path = configPath;
+    bool found = false;
+
+    for (const auto& prefix : searchPrefixes) {
+        std::string testPath = prefix + configPath;
+        FILE* f = nullptr;
+        if (fopen_s(&f, testPath.c_str(), "rb") == 0 && f) {
+            fclose(f);
+            path = testPath;
+            found = true;
+            std::cout << "[UIManager] Found Demo Image at: " << path << std::endl;
+            break;
+        }
+    }
+
+    if (!found) {
+        // Log warning but keep the config path so FFmpeg tries it (and prints localized error)
+        std::cerr << "[UIManager] Warning: Demo Image not found: " << configPath << " (searched relative paths)" << std::endl;
+        path = configPath;
+    }
+    
+    // Direct software decode using FFmpeg to avoid HW acceleration issues
+    bool imageLoaded = false;
+    int w = 0;
+    int h = 0;
+    std::vector<uint8_t> rgbData;
+
+    AVFormatContext* fmtCtx = nullptr;
+    AVFrame* frame = nullptr;
+    AVFrame* frameRGB = nullptr;
+    AVPacket* packet = nullptr;
+    AVCodecContext* codecCtx = nullptr;
+    SwsContext* swsCtx = nullptr;
+    uint8_t* buffer = nullptr;
+
+    // Use a clean scope for FFmpeg loading
+    if (avformat_open_input(&fmtCtx, path.c_str(), nullptr, nullptr) >= 0) {
+        if (avformat_find_stream_info(fmtCtx, nullptr) >= 0) {
+            int videoStreamIdx = -1;
+            for (unsigned int i = 0; i < fmtCtx->nb_streams; i++) {
+                if (fmtCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+                    videoStreamIdx = i;
+                    break;
+                }
+            }
+
+            if (videoStreamIdx != -1) {
+                AVCodecParameters* codecParams = fmtCtx->streams[videoStreamIdx]->codecpar;
+                const AVCodec* codec = avcodec_find_decoder(codecParams->codec_id);
+                if (codec) {
+                    codecCtx = avcodec_alloc_context3(codec);
+                    avcodec_parameters_to_context(codecCtx, codecParams);
+                    
+                    if (avcodec_open2(codecCtx, codec, nullptr) >= 0) {
+                         frame = av_frame_alloc();
+                         frameRGB = av_frame_alloc();
+                         packet = av_packet_alloc();
+                         
+                         while (av_read_frame(fmtCtx, packet) >= 0) {
+                            if (packet->stream_index == videoStreamIdx) {
+                                if (avcodec_send_packet(codecCtx, packet) == 0) {
+                                    if (avcodec_receive_frame(codecCtx, frame) == 0) {
+                                        w = frame->width;
+                                        h = frame->height;
+                                        
+                                        int numBytes = av_image_get_buffer_size(AV_PIX_FMT_RGB24, w, h, 1);
+                                        buffer = (uint8_t*)av_malloc(numBytes);
+                                        
+                                        av_image_fill_arrays(frameRGB->data, frameRGB->linesize, buffer, AV_PIX_FMT_RGB24, w, h, 1);
+                                        
+                                        swsCtx = sws_getContext(w, h, codecCtx->pix_fmt,
+                                                                            w, h, AV_PIX_FMT_RGB24,
+                                                                            SWS_BILINEAR, nullptr, nullptr, nullptr);
+                                                                            
+                                        sws_scale(swsCtx, frame->data, frame->linesize, 0, h, frameRGB->data, frameRGB->linesize);
+                                        
+                                        rgbData.resize(w * h * 3);
+                                        av_image_copy_to_buffer(rgbData.data(), rgbData.size(), frameRGB->data, frameRGB->linesize, AV_PIX_FMT_RGB24, w, h, 1);
+                                        
+                                        std::cout << "[UIManager] Loaded Demo Image (" << w << "x" << h << ") from: " << path << std::endl;
+                                        imageLoaded = true;
+                                    }
+                                }
+                            }
+                            av_packet_unref(packet);
+                            if (imageLoaded) break;
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        std::cerr << "[UIManager] Failed to open image: " << path << std::endl;
+    }
+
+    // Cleanup
+    if (packet) av_packet_free(&packet);
+    if (frame) av_frame_free(&frame);
+    if (frameRGB) av_frame_free(&frameRGB);
+    if (codecCtx) avcodec_free_context(&codecCtx);
+    if (fmtCtx) avformat_close_input(&fmtCtx);
+    if (swsCtx) sws_freeContext(swsCtx);
+    if (buffer) av_free(buffer);
+
+    
+    if (imageLoaded && m_TextureRenderer) {
+         glGenTextures(1, &m_DemoImageTexture);
+        glBindTexture(GL_TEXTURE_2D, m_DemoImageTexture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, rgbData.data());
+        glBindTexture(GL_TEXTURE_2D, 0);
+        return;
+    }
+
+   // Fallback
+   std::cerr << "[UIManager] Failed to load Demo Image: " << path << ". Creating fallback." << std::endl;
+   
+   w = 256; 
+   h = 256;
+   std::vector<uint8_t> fallbackData(w * h * 3);
+   for(int y=0; y<h; y++) {
+       for(int x=0; x<w; x++) {
+           bool white = ((x/32) + (y/32)) % 2 == 0;
+           fallbackData[(y*w+x)*3 + 0] = white ? 200 : 100;
+           fallbackData[(y*w+x)*3 + 1] = white ? 200 : 100;
+           fallbackData[(y*w+x)*3 + 2] = white ? 200 : 100;
+       }
+   }
+   
+   if (m_TextureRenderer) {
+        glGenTextures(1, &m_DemoImageTexture);
+        glBindTexture(GL_TEXTURE_2D, m_DemoImageTexture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, fallbackData.data());
+        glBindTexture(GL_TEXTURE_2D, 0);
+   }
+}
+
+void UIManager::GenerateFilterThumbnails() {
+    if (!m_TextureRenderer || !m_DemoImageTexture) return;
+    
+    // We want square thumbnails for the UI (e.g. 200x200)
+    int thumbW = 200;
+    int thumbH = 200;
+    
+    // Generate 16 thumbnails (0..15)
+    for (int i=0; i<16; i++) {
+        GLuint tex = m_TextureRenderer->GenerateFilterThumbnail(m_DemoImageTexture, i, thumbW, thumbH);
+        if (tex) {
+            m_FilterThumbnails.push_back(tex);
+        } else {
+            // Fallback (should not happen if GL works)
+            m_FilterThumbnails.push_back(m_DemoImageTexture); 
+        }
+    }
+    std::cout << "[UIManager] Generated " << m_FilterThumbnails.size() << " filter thumbnails." << std::endl;
+}

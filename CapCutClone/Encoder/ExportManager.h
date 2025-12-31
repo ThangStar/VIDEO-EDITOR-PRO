@@ -39,6 +39,7 @@ public:
         float grain = 0.0f;
         float aberration = 0.0f;
         bool sepia = false;
+        int filterType = 0; // 0 = None, 1-15 = Various filters
     };
     
     void SetEffectParams(const EffectParams& params) { m_EffectParams = params; }

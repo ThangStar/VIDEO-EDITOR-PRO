@@ -99,4 +99,11 @@ private:
 
     // Helper methods
     const char* FormatTime(float seconds);
+
+    // Filters Panel
+    unsigned int m_DemoImageTexture = 0;
+    std::vector<unsigned int> m_FilterThumbnails;
+    bool m_FilterGenerationAttempted = false;
+    void LoadDemoImage(); // Load cat.jpg
+    void GenerateFilterThumbnails();
 };
