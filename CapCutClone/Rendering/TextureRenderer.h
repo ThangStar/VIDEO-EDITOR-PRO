@@ -45,6 +45,9 @@ public:
     
     // Copy visual settings from another renderer
     void CopySettingsFrom(const TextureRenderer* other);
+    
+    // Config
+    void SetFlipY(bool flip);
 
 private:
     GLuint m_TextureID;
@@ -57,6 +60,13 @@ private:
     GLuint m_FBO;
     GLuint m_FBOTexture;
     GLuint m_RBO;
+    
+    bool m_FlipY;
+    
+    // PBO for async readback (Double buffering)
+    GLuint m_PBO[2];
+    int m_PBOIndex;
+    int m_PBONextIndex;
     
     bool m_Initialized;
 

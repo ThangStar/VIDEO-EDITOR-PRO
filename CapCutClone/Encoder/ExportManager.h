@@ -6,6 +6,8 @@
 #include <atomic>
 #include <functional>
 
+struct GLFWwindow;
+
 class TimelineManager;
 class VideoPlayer;
 
@@ -13,6 +15,10 @@ class ExportManager {
 public:
     ExportManager(TimelineManager* timeline, VideoPlayer* player);
     ~ExportManager();
+    
+    // Set main window for context sharing
+    void SetMainWindow(GLFWwindow* mainWindow) { m_MainWindow = mainWindow; }
+    GLFWwindow* GetMainWindow() const { return m_MainWindow; }
 
     // Start export in a separate thread
     bool StartExport(const std::string& outputFile, int width, int height, int fps);
@@ -41,6 +47,7 @@ private:
     TimelineManager* m_TimelineManager;
     VideoPlayer* m_VideoPlayer;
     VideoEncoder* m_Encoder;
+    GLFWwindow* m_MainWindow; // Reference to main window for context sharing
     
     EffectParams m_EffectParams;
 
@@ -50,6 +57,12 @@ private:
     std::atomic<bool> m_IsFinished;
     std::atomic<bool> m_CancelRequested;
     std::atomic<float> m_Progress;
+    
+    // Shared Context managed by Main Thread
+    GLFWwindow* m_OffscreenWindow;
 
     void ExportThreadFunc(std::string outputFile, int width, int height, int fps);
+    
+    // PBO IDs for async transfer
+    unsigned int m_PBOs[2]; // Using unsigned int directly to avoid GL dependency in header if possible, or include glad/glfw
 };

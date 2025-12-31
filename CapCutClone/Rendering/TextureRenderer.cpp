@@ -112,7 +112,12 @@ TextureRenderer::TextureRenderer()
     , m_FBO(0)
     , m_FBOTexture(0)
     , m_RBO(0)
+    , m_FlipY(false)
 {
+}
+
+void TextureRenderer::SetFlipY(bool flip) {
+    m_FlipY = flip;
 }
 
 // ... (Initialize/Cleanup remains similar, but need to clean FBOs too)
@@ -180,20 +185,18 @@ void TextureRenderer::UnbindFramebuffer() {
 }
 
 void TextureRenderer::GetRGBPixels(std::vector<uint8_t>& buffer, int width, int height) {
-    // Read from currently bound FBO (should be called between Bind/Unbind)
-    // Or just bind FBO here? Safer to assume bound or bind explicitly.
-    BindFramebuffer(); 
+    // Caller should have already bound the FBO - don't rebind here
+    // Ensure GPU rendering is complete before reading
+    glFinish();
     
     // Buffer size check
-    if (buffer.size() < width * height * 3) {
+    if (buffer.size() < (size_t)(width * height * 3)) {
         buffer.resize(width * height * 3);
     }
     
     // Pixel alignment
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, buffer.data());
-    
-    // Unbind handled by caller or here? Let's leave it bound for caller to unbind
 }
 
 
@@ -252,6 +255,9 @@ void TextureRenderer::DeleteTexture() {
 void TextureRenderer::RenderTexture(float x, float y, float width, float height) {
     if (!m_Initialized || !m_TextureID) return;
 
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, m_TextureID);
+
     glUseProgram(m_ShaderProgram);
 
     // Uniforms
@@ -273,11 +279,19 @@ void TextureRenderer::RenderTexture(float x, float y, float width, float height)
     // Set Viewport to match
     glViewport(0, 0, (GLsizei)pW, (GLsizei)pH);
     
+    float projY = -2.0f / pH;
+    float transY = 1.0f;
+    
+    if (m_FlipY) {
+        projY = 2.0f / pH;  // Invert Y scale
+        transY = -1.0f;     // Move origin to -1
+    }
+
     float projection[16] = {
         2.0f / pW, 0.0f, 0.0f, 0.0f,
-        0.0f, -2.0f / pH, 0.0f, 0.0f,
+        0.0f, projY, 0.0f, 0.0f,
         0.0f, 0.0f, -1.0f, 0.0f,
-        -1.0f, 1.0f, 0.0f, 1.0f
+        -1.0f, transY, 0.0f, 1.0f
     };
     if ((loc = glGetUniformLocation(m_ShaderProgram, "projection")) >= 0) glUniformMatrix4fv(loc, 1, GL_FALSE, projection);
 

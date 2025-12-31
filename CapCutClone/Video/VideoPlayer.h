@@ -40,6 +40,7 @@ private:
     AVFormatContext* m_FormatContext;
     AVCodecContext* m_CodecContext;  // Video codec
     SwsContext* m_SwsContext;  // Video scaler
+    AVBufferRef* m_HardwareDeviceContext; // GPU Device Context
     
     // Frames
     AVFrame* m_Frame;  // Video frame

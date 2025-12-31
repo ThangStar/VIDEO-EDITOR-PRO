@@ -91,6 +91,11 @@ void UIManager::SetVideoPlayer(VideoPlayer* player) {
     if (m_TimelineManager) m_TimelineManager->SetVideoPlayer(player);
     if (!m_ExportManager && m_TimelineManager) {
         m_ExportManager = new ExportManager(m_TimelineManager, m_VideoPlayer);
+        // Set main window for OpenGL context sharing
+        GLFWwindow* mainWindow = glfwGetCurrentContext();
+        if (mainWindow) {
+            m_ExportManager->SetMainWindow(mainWindow);
+        }
     }
 }
 
@@ -915,8 +920,13 @@ void UIManager::RenderExportDialog() {
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0.8f, 0.85f, 1.0f)); // CapCut Teal
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1,1,1,1));
         if (ImGui::Button("Export", ImVec2(btnWidth, 30))) {
-            if (m_ExportManager) {
-                // Apply Effects logic
+                if (m_ExportManager) {
+                    // Ensure Main Window is set (Critical for context sharing)
+                    if (!m_ExportManager->GetMainWindow()) {
+                         m_ExportManager->SetMainWindow(glfwGetCurrentContext());
+                    }
+
+                    // Apply Effects logic
                 if (m_TextureRenderer) {
                     ExportManager::EffectParams params;
                     params.brightness = m_TextureRenderer->GetBrightness();

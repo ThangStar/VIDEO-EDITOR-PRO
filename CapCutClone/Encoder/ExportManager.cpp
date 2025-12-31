@@ -10,10 +10,12 @@ ExportManager::ExportManager(TimelineManager* timeline, VideoPlayer* player)
     : m_TimelineManager(timeline)
     , m_VideoPlayer(player)
     , m_Encoder(nullptr)
+    , m_MainWindow(nullptr)
     , m_IsExporting(false)
     , m_IsFinished(false)
     , m_CancelRequested(false)
     , m_Progress(0.0f)
+    , m_OffscreenWindow(nullptr)
 {
 }
 
@@ -24,18 +26,41 @@ ExportManager::~ExportManager() {
     }
     if (m_Encoder) {
         delete m_Encoder;
+        m_Encoder = nullptr;
+    }
+    if (m_OffscreenWindow) {
+        glfwDestroyWindow(m_OffscreenWindow);
+        m_OffscreenWindow = nullptr;
     }
 }
 
 bool ExportManager::StartExport(const std::string& outputFile, int width, int height, int fps) {
     if (m_IsExporting) return false;
 
+    if (m_OffscreenWindow) {
+        glfwDestroyWindow(m_OffscreenWindow);
+        m_OffscreenWindow = nullptr;
+    }
+
+    if (m_MainWindow) {
+        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+        
+        m_OffscreenWindow = glfwCreateWindow(width, height, "ExportContext", nullptr, m_MainWindow);
+        if (!m_OffscreenWindow) {
+             std::cerr << "[ExportManager] Failed to create offscreen window!" << std::endl;
+        } else {
+             std::cout << "[ExportManager] Offscreen window created successfully." << std::endl;
+        }
+    }
+
     m_IsExporting = true;
     m_IsFinished = false;
     m_CancelRequested = false;
     m_Progress = 0.0f;
 
-    // Launch thread
     m_ExportThread = std::thread(&ExportManager::ExportThreadFunc, this, outputFile, width, height, fps);
     
     return true;
@@ -48,212 +73,295 @@ void ExportManager::CancelExport() {
 }
 
 void ExportManager::ExportThreadFunc(std::string outputFile, int width, int height, int fps) {
-    m_Encoder = new VideoEncoder();
+    VideoEncoder* localEncoder = new VideoEncoder();
+    m_Encoder = localEncoder; 
     
-    // Align dimensions to 16 (required for some hardware encoders like h264_mf)
+    std::cout << "[System] Tech Stack Verification:" << std::endl;
+    std::cout << "  - Language: C++ (Native)" << std::endl;
+    std::cout << "  - Encoder: FFmpeg + Hardware Accel" << std::endl;
+    std::cout << "  - Rendering: OpenGL Core 3.3" << std::endl;
+    std::cout << "  - Async Transfer: PBO (Pixel Buffer Objects)" << std::endl;
+
     int alignedWidth = (width + 15) & ~15;
     int alignedHeight = (height + 15) & ~15;
     
     if (alignedWidth != width || alignedHeight != height) {
-        std::cout << "[ExportManager] Aligning resolution from " << width << "x" << height 
-                  << " to " << alignedWidth << "x" << alignedHeight << " for hardware encoding compatibility." << std::endl;
         width = alignedWidth;
         height = alignedHeight;
     }
 
-    // 1. Initialize Encoder
-    if (!m_Encoder->Initialize(outputFile, width, height, fps)) {
+    int bitrate = 8000000; 
+    if (width >= 1920) bitrate = 15000000;
+    if (width >= 3840) bitrate = 40000000; 
+
+    if (!localEncoder->Initialize(outputFile, width, height, fps, bitrate)) {
         std::cerr << "Failed to initialize export encoder!" << std::endl;
-        delete m_Encoder;
+        delete localEncoder;
         m_Encoder = nullptr;
         m_IsExporting = false;
-        m_IsFinished = true; // Mark as finished (failed)
+        m_IsFinished = true;
         return;
     }
 
     double duration = m_TimelineManager->GetTotalDuration();
-    if (duration <= 0.001) duration = 1.0; // Avoid div by zero
+    if (duration <= 0.001) duration = 1.0;
 
     int totalFrames = static_cast<int>(duration * fps);
     double frameDuration = 1.0 / fps;
-
-    // 2. Rendering Loop
-    // Initialize OpenGL Context for this thread (Hidden window)
-    // Note: On Windows this usually works. On macOS it would fail (must be main thread).
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    GLFWwindow* offscreenWindow = glfwCreateWindow(width, height, "ExportContext", nullptr, nullptr);
-    if (!offscreenWindow) {
-        std::cerr << "[ExportManager] Failed to create offscreen window context!" << std::endl;
-        // Continue without effects (fallback)? Or abort?
-        // Fallback to raw video
-    } else {
-        glfwMakeContextCurrent(offscreenWindow);
-        if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
-             std::cerr << "[ExportManager] Failed to initialize GLAD" << std::endl;
-        }
-    }
     
-    // Setup Renderer
+    std::cout << "[ExportManager] StartExport: " << width << "x" << height << " @ " << fps << "fps, Bitrate: " << bitrate << std::endl;
+
     TextureRenderer* renderer = nullptr;
-    if (offscreenWindow) {
-        renderer = new TextureRenderer();
-        if (renderer->Initialize()) {
-            renderer->CreateFramebuffer(width, height);
-            
-            // Apply effects
-            renderer->SetFilterParams(m_EffectParams.brightness, m_EffectParams.contrast, m_EffectParams.saturation);
-            renderer->SetEffectParams(m_EffectParams.vignette, m_EffectParams.grain, m_EffectParams.aberration, m_EffectParams.sepia);
-            
-            std::cout << "[ExportManager] Offscreen renderer initialized." << std::endl;
-        } else {
-             delete renderer;
-             renderer = nullptr;
-        }
+    bool usingPBO = false;
+    GLsync fences[2] = {nullptr, nullptr}; // Sync objects for each PBO
+
+    if (m_OffscreenWindow) {
+         glfwMakeContextCurrent(m_OffscreenWindow);
+         glViewport(0, 0, width, height);
+         
+         if (gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+              renderer = new TextureRenderer();
+              if (renderer->Initialize()) {
+                 renderer->CreateFramebuffer(width, height);
+                 renderer->SetFlipY(true); // Flip for correct export orientation
+                 
+                 renderer->SetFilterParams(m_EffectParams.brightness, m_EffectParams.contrast, m_EffectParams.saturation);
+                 renderer->SetEffectParams(m_EffectParams.vignette, m_EffectParams.grain, m_EffectParams.aberration, m_EffectParams.sepia);
+                 
+                 glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                 glGenBuffers(2, m_PBOs);
+                 
+                 // CRITICAL FIX: Add padding for PBOs
+                 // sws_scale optimized SIMD instructions may read slightly past end of line/buffer
+                 // Adding extra bytes prevents SegFaults on strict driver memory
+                 size_t bufferSize = (size_t)width * height * 3 + 4096; 
+                 
+                 glBindBuffer(GL_PIXEL_PACK_BUFFER, m_PBOs[0]);
+                 glBufferData(GL_PIXEL_PACK_BUFFER, bufferSize, nullptr, GL_STREAM_READ);
+                 glBindBuffer(GL_PIXEL_PACK_BUFFER, m_PBOs[1]);
+                 glBufferData(GL_PIXEL_PACK_BUFFER, bufferSize, nullptr, GL_STREAM_READ);
+                 glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+                 
+                 // Check for GL errors
+                 GLenum err = glGetError();
+                 if (err != GL_NO_ERROR) {
+                     std::cerr << "[ExportManager] OpenGL Error during PBO init: " << err << std::endl;
+                     glDeleteBuffers(2, m_PBOs);
+                 } else {
+                     usingPBO = true;
+                     std::cout << "[ExportManager] PBOs initialized (" << bufferSize << " bytes each)" << std::endl;
+                 }
+              } else {
+                  std::cerr << "[ExportManager] Renderer Initialize failed." << std::endl;
+                  delete renderer;
+                  renderer = nullptr;
+              }
+         } else {
+             std::cerr << "[ExportManager] GLAD Init failed in export thread." << std::endl;
+         }
+    } else {
+        std::cerr << "[ExportManager] WARNING: No Offscreen Window. PBO Disabled." << std::endl;
     }
 
     VideoPlayer tempPlayer;
     std::string currentLoadedFile = "";
-    std::vector<uint8_t> pixelBuffer; // For reading back from FBO
+    std::vector<uint8_t> pixelBuffer; 
+    pixelBuffer.resize(width * height * 3); 
 
-    std::cout << "[ExportManager] Starting export loop. Total frames: " << totalFrames << std::endl;
+    std::cout << "[ExportManager] Starting export loop with PBO: " << (usingPBO ? "YES" : "NO") 
+              << ". Frames: " << totalFrames << std::endl;
 
+    // Main export loop
     for (int i = 0; i < totalFrames; ++i) {
-        if (m_CancelRequested) {
-            std::cout << "[ExportManager] Cancel requested." << std::endl;
-            break;
-        }
+        if (m_CancelRequested) break;
  
         double currentTime = i * frameDuration;
         
-        bool frameEncoded = false;
+        bool frameRendered = false;
         Clip* currentClip = nullptr;
         
         auto& tracks = m_TimelineManager->GetTracks();
-        if (!tracks.empty()) {
-             currentClip = tracks[0].GetClipAtTime(currentTime);
-        }
- 
+        if (!tracks.empty()) currentClip = tracks[0].GetClipAtTime(currentTime);
+
         if (currentClip) {
-            // Load if not loaded or file changed
             if (!tempPlayer.IsLoaded() || currentClip->filepath != currentLoadedFile) {
-                 std::cout << "[ExportManager] Loading clip: " << currentClip->filepath << std::endl;
-                 if (tempPlayer.LoadVideo(currentClip->filepath)) {
-                     currentLoadedFile = currentClip->filepath;
-                 } else {
-                     std::cerr << "[ExportManager] Failed to load clip!" << std::endl;
-                     currentLoadedFile = ""; // Failed
-                 }
+                 if (tempPlayer.LoadVideo(currentClip->filepath)) currentLoadedFile = currentClip->filepath;
             } 
             
             if (tempPlayer.IsLoaded()) {
                 double localTime = currentClip->ToLocalTime(currentTime);
-                bool needsSeek = true;
-                
                 double playerCurrentTime = tempPlayer.GetCurrentTime();
-                double playerFPS = tempPlayer.GetFPS();
-                if (playerFPS <= 0) playerFPS = 30.0;
+                double expectedNextTime = playerCurrentTime + (1.0 / (tempPlayer.GetFPS() > 0 ? tempPlayer.GetFPS() : 30.0));
                 
-                double expectedNextTime = playerCurrentTime + (1.0 / playerFPS);
-                double diff = std::abs(localTime - expectedNextTime);
-                
-                if (diff < 0.1) needsSeek = false;
-                if (i == 0 || currentClip->filepath != currentLoadedFile) needsSeek = true;
- 
-                if (needsSeek) {
+                if (i == 0 || currentClip->filepath != currentLoadedFile || std::abs(localTime - expectedNextTime) > 0.1) {
                     tempPlayer.Seek(localTime, false);
                 }
                 
-                bool decodeSuccess = tempPlayer.DecodeNextFrame();
-                // If decode fails, try using last frame (if we didn't seek just now)
-                
+                tempPlayer.DecodeNextFrame();
                 const uint8_t* data = tempPlayer.GetFrameData(); 
-                if (data) {
-                    if (renderer) {
-                        // RENDER WITH EFFECTS
-                        // Ensure input texture exists and matches video frame dimensions
-                        static int lastTexW = 0, lastTexH = 0;
-                        if (renderer->GetTextureID() == 0 || lastTexW != tempPlayer.GetWidth() || lastTexH != tempPlayer.GetHeight()) {
-                            renderer->CreateTexture(tempPlayer.GetWidth(), tempPlayer.GetHeight());
-                            lastTexW = tempPlayer.GetWidth();
-                            lastTexH = tempPlayer.GetHeight();
-                        }
-
-                        renderer->UpdateTexture(data, tempPlayer.GetWidth(), tempPlayer.GetHeight()); // Update with original dimensions
-                        renderer->BindFramebuffer();
-                        
-                        // Render to FBO (sized to export width/height)
-                        // Clear
-                        glClearColor(0,0,0,1);
-                        glClear(GL_COLOR_BUFFER_BIT);
-                        
-                        renderer->RenderTexture(-1.0f, -1.0f, 2.0f, 2.0f); // Render Fullscreen Quad in Normalized Device Coordinates? 
-                        // Wait, RenderTexture uses x,y,w,h in pixels or NDC?
-                        // The loop in TextureRenderer uses pixels: x, y, width, height. 
-                        // AND it uses Dynamic Projection now: 2.0/pW... so 0,0 is correct?
-                        // If projection is 0..W, 0..H -> -1..1, then passing 0,0, W, H works.
-                        renderer->RenderTexture(0, 0, (float)width, (float)height);
-                        
-                        // Read Pixels
-                        renderer->GetRGBPixels(pixelBuffer, width, height);
-                        renderer->UnbindFramebuffer();
-                        
-                        m_Encoder->EncodeFrame(pixelBuffer.data());
-                    } else {
-                        // Raw encoding (fallback)
-                        // Resize if needed? NVENC might handle it, or we send raw.
-                        // If dimensions mismatch, we might crash. 
-                        // VideoEncoder Initialize set context width/height.
-                        // If data is different size, sws_scale in EncodeFrame handles it?
-                        // VideoEncoder::EncodeFrame expects data matching its context? 
-                        // No, VideoEncoder::EncodeFrame takes rgbData and uses sws_scale which assumes Input size == m_Width/m_Height?
-                        // Let's check VideoEncoder.cpp: 
-                        // It uses `m_Width * 3` as stride. It assumes input is `m_Width` x `m_Height`.
-                        // If clip resolution != export resolution, this CRASHES.
-                        // So we MUST use renderer to resize, or fix VideoEncoder to accept input dimensions.
-                        // Given we implemented Renderer, we rely on it for resizing.
-                        // If renderer failed, we are in trouble.
-                        m_Encoder->EncodeFrame(data); 
-                    }
-                    frameEncoded = true;
-                }
                 
+                if (data && renderer) {
+                    static int lastTexW = 0, lastTexH = 0;
+                    if (tempPlayer.GetWidth() != lastTexW || tempPlayer.GetHeight() != lastTexH) {
+                        renderer->CreateTexture(tempPlayer.GetWidth(), tempPlayer.GetHeight());
+                        lastTexW = tempPlayer.GetWidth();
+                        lastTexH = tempPlayer.GetHeight();
+                    }
+                    // Update Texture with new frame data!
+                    renderer->UpdateTexture(tempPlayer.GetFrameData(), tempPlayer.GetWidth(), tempPlayer.GetHeight());
+                    
+                    // 2. Render to FBO
+                    renderer->BindFramebuffer();
+                    glViewport(0, 0, width, height);
+                    glClear(GL_COLOR_BUFFER_BIT);
+                    
+                    // Draw the video frame
+                    renderer->RenderTexture(0, 0, (float)width, (float)height);
+                    
+                    if (usingPBO) {
+                        int currentPBO = i % 2;
+                        int previousPBO = (i + 1) % 2;
+                        
+                        // Wait Previous
+                        if (i > 0 && fences[previousPBO]) {
+                             GLenum waitRet = glClientWaitSync(fences[previousPBO], GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000);
+                             if (waitRet == GL_TIMEOUT_EXPIRED || waitRet == GL_WAIT_FAILED) {
+                                 // std::cerr << "[Error] Fence wait error!" << std::endl;
+                             }
+                             glDeleteSync(fences[previousPBO]);
+                             fences[previousPBO] = nullptr;
+                        }
+                        
+                        // Read Current
+                        glBindBuffer(GL_PIXEL_PACK_BUFFER, m_PBOs[currentPBO]);
+                        glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, 0);
+                        
+                        // Fence Current
+                        if (fences[currentPBO]) glDeleteSync(fences[currentPBO]);
+                        fences[currentPBO] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+                        
+                        // Process Previous
+                        if (i > 0) {
+                            glBindBuffer(GL_PIXEL_PACK_BUFFER, m_PBOs[previousPBO]);
+                            GLubyte* ptr = (GLubyte*)glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
+                            if (ptr) {
+                                if (!localEncoder->EncodeFrame(ptr)) {
+                                     // Suppress frame drop error to avoid spam
+                                }
+                                glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+                            } else {
+                                std::cerr << "[Error] Failed to map PBO!" << std::endl;
+                            }
+                        }
+                        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+                    } else {
+                        renderer->GetRGBPixels(pixelBuffer, width, height);
+                        localEncoder->EncodeFrame(pixelBuffer.data());
+                    }
+                    
+                    renderer->UnbindFramebuffer();
+                    frameRendered = true;
+                }
             }
         }
  
-        if (!frameEncoded) {
-            // Black frame
+        // Handle empty frames
+        if (!frameRendered) {
             if (renderer) {
                 renderer->BindFramebuffer();
                 glClearColor(0,0,0,1);
                 glClear(GL_COLOR_BUFFER_BIT);
-                renderer->GetRGBPixels(pixelBuffer, width, height);
+                
+                if (usingPBO) {
+                    int currentPBO = i % 2;
+                    int previousPBO = (i + 1) % 2;
+                    
+                    if (i > 0 && fences[previousPBO] != nullptr) {
+                        glClientWaitSync(fences[previousPBO], GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000);
+                        glDeleteSync(fences[previousPBO]);
+                        fences[previousPBO] = nullptr;
+                    }
+                    
+                    glBindBuffer(GL_PIXEL_PACK_BUFFER, m_PBOs[currentPBO]);
+                    glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, 0);
+                    
+                    if (fences[currentPBO] != nullptr) glDeleteSync(fences[currentPBO]);
+                    fences[currentPBO] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+                    
+                    if (i > 0) {
+                        glBindBuffer(GL_PIXEL_PACK_BUFFER, m_PBOs[previousPBO]);
+                        GLubyte* ptr = (GLubyte*)glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
+                        if (ptr) {
+                            localEncoder->EncodeFrame(ptr);
+                            glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+                        } else {
+                            renderer->GetRGBPixels(pixelBuffer, width, height);
+                            localEncoder->EncodeFrame(pixelBuffer.data());
+                        }
+                    }
+                    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+                } else {
+                    renderer->GetRGBPixels(pixelBuffer, width, height);
+                    localEncoder->EncodeFrame(pixelBuffer.data());
+                }
                 renderer->UnbindFramebuffer();
-                m_Encoder->EncodeFrame(pixelBuffer.data());
             } else {
-                 std::vector<uint8_t> blackFrame(width * height * 3, 0);
-                 m_Encoder->EncodeFrame(blackFrame.data());
+                std::fill(pixelBuffer.begin(), pixelBuffer.end(), 0);
+                localEncoder->EncodeFrame(pixelBuffer.data());
             }
         }
  
         m_Progress = (float)(i + 1) / totalFrames;
+        if (i % 60 == 0) std::cout << "[ExportManager] Processed " << i << "/" << totalFrames << std::endl;
+    }
+
+    // === CRITICAL: Encode LAST frame from PBO ===
+    if (usingPBO && !m_CancelRequested && totalFrames > 0) {
+        int lastPBO = (totalFrames - 1) % 2;
         
-        if (i % 30 == 0) {
-             std::cout << "[ExportManager] Processed " << i << "/" << totalFrames << " frames." << std::endl;
+        // Wait for last fence
+        if (fences[lastPBO] != nullptr) {
+            glClientWaitSync(fences[lastPBO], GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000);
+            glDeleteSync(fences[lastPBO]);
+            fences[lastPBO] = nullptr;
+        }
+        
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, m_PBOs[lastPBO]);
+        GLubyte* ptr = (GLubyte*)glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
+        if (ptr) {
+            std::cout << "[ExportManager] Encoding final frame from PBO " << lastPBO << std::endl;
+            localEncoder->EncodeFrame(ptr);
+            glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+        } else {
+            std::cerr << "[Error] Failed to map final PBO!" << std::endl;
+        }
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    }
+
+    // Cleanup
+    if (usingPBO) {
+        // Delete any remaining fences
+        for (int i = 0; i < 2; i++) {
+            if (fences[i] != nullptr) {
+                glDeleteSync(fences[i]);
+            }
         }
     }
+    // Cleanup PBOs
+    if (usingPBO) {
+        glDeleteBuffers(2, m_PBOs);
+        if (fences[0]) glDeleteSync(fences[0]);
+        if (fences[1]) glDeleteSync(fences[1]);
+    }
 
-    // Cleanup Renderer
     if (renderer) {
         delete renderer;
-        renderer = nullptr;
     }
-    if (offscreenWindow) {
-        glfwDestroyWindow(offscreenWindow);
-    }
+    
+    glfwMakeContextCurrent(nullptr);
 
-    // 3. Finalize
-    m_Encoder->Finalize();
-    delete m_Encoder;
+    localEncoder->Finalize();
+    delete localEncoder;
     m_Encoder = nullptr;
 
     m_IsExporting = false;

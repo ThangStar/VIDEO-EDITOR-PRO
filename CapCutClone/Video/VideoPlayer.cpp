@@ -16,6 +16,7 @@ VideoPlayer::VideoPlayer()
     , m_CurrentTime(0.0)
     , m_FPS(0.0)
     , m_IsLoaded(false)
+    , m_HardwareDeviceContext(nullptr)
 {
 }
 
@@ -59,53 +60,19 @@ bool VideoPlayer::LoadVideo(const std::string& filepath) {
     // Get codec parameters
     AVCodecParameters* codecParams = m_FormatContext->streams[m_VideoStreamIndex]->codecpar;
     
-    // Try GPU hardware decoders first for better performance
-    const AVCodec* codec = nullptr;
-    const char* hwDecoderNames[] = {
-        "h264_cuvid",    // NVIDIA CUDA
-        "h264_qsv",      // Intel Quick Sync
-        "h264_d3d11va",  // Direct3D 11 (Common on Windows)
-        "h264_dxva2",    // DirectX Video Acceleration (Older Windows)
-        "hevc_cuvid",    // NVIDIA HEVC
-        "hevc_qsv",      // Intel HEVC
-        nullptr
-    };
-    
-    // Try hardware decoders
-    for (int i = 0; hwDecoderNames[i] != nullptr; ++i) {
-        codec = avcodec_find_decoder_by_name(hwDecoderNames[i]);
-        if (codec) {
-            std::cout << "Trying GPU decoder: " << hwDecoderNames[i] << std::endl;
-            break;
-        }
-    }
-    
-    // Fallback to software decoder
+    // Enable Hardware Acceleration (Modern Method)
+    const AVCodec* codec = avcodec_find_decoder(codecParams->codec_id);
     if (!codec) {
-        std::cout << "GPU decoders not available, using software decoder" << std::endl;
-        codec = avcodec_find_decoder(codecParams->codec_id);
+         Cleanup(); return false; 
     }
     
-    if (!codec) {
-        std::cerr << "Unsupported codec!" << std::endl;
-        Cleanup();
-        return false;
-    }
-
-    // Create codec context
     m_CodecContext = avcodec_alloc_context3(codec);
-    if (!m_CodecContext) {
-        std::cerr << "Could not allocate codec context" << std::endl;
-        Cleanup();
-        return false;
+    if (!m_CodecContext) { Cleanup(); return false; }
+    
+    if (avcodec_parameters_to_context(m_CodecContext, codecParams) < 0) {
+        Cleanup(); return false;
     }
 
-    if (avcodec_parameters_to_context(m_CodecContext, codecParams) < 0) {
-        std::cerr << "Could not copy codec parameters" << std::endl;
-        Cleanup();
-        return false;
-    }
-    
     // MAXIMUM error concealment to fix broken frames
     m_CodecContext->error_concealment = FF_EC_GUESS_MVS | FF_EC_DEBLOCK | FF_EC_FAVOR_INTER;
     m_CodecContext->err_recognition = 0;  // Be permissive - accept all frames
@@ -118,7 +85,32 @@ bool VideoPlayer::LoadVideo(const std::string& filepath) {
     m_CodecContext->skip_idct = AVDISCARD_NONE;
     m_CodecContext->skip_loop_filter = AVDISCARD_NONE;
 
-    // Open codec
+    // Try to create Hardware Device Context (D3D11VA)
+    int ret = av_hwdevice_ctx_create(&m_HardwareDeviceContext, AV_HWDEVICE_TYPE_D3D11VA, nullptr, nullptr, 0);
+    if (ret < 0) {
+        std::cout << "D3D11VA not available, trying DXVA2..." << std::endl;
+        ret = av_hwdevice_ctx_create(&m_HardwareDeviceContext, AV_HWDEVICE_TYPE_DXVA2, nullptr, nullptr, 0);
+    }
+    
+    if (ret == 0) {
+        std::cout << "[VideoPlayer] SUCCESS: Hardware Acceleration (D3D11VA/DXVA2) Enabled!" << std::endl;
+        m_CodecContext->hw_device_ctx = av_buffer_ref(m_HardwareDeviceContext);
+        
+        // This callback is required to negotiate the pixel format
+        m_CodecContext->get_format = [](AVCodecContext *ctx, const enum AVPixelFormat *pix_fmts) -> enum AVPixelFormat {
+             const enum AVPixelFormat *p;
+             for (p = pix_fmts; *p != -1; p++) {
+                 if (*p == AV_PIX_FMT_D3D11 || *p == AV_PIX_FMT_DXVA2_VLD) {
+                     return *p;
+                 }
+             }
+             std::cerr << "Failed to get HW surface format." << std::endl;
+             return AV_PIX_FMT_NONE;
+        };
+    } else {
+        std::cerr << "[VideoPlayer] WARNING: Hardware Acceleration FAILED. using CPU." << std::endl;
+    }
+
     if (avcodec_open2(m_CodecContext, codec, nullptr) < 0) {
         std::cerr << "Could not open codec" << std::endl;
         Cleanup();
@@ -165,18 +157,17 @@ bool VideoPlayer::LoadVideo(const std::string& filepath) {
     av_image_fill_arrays(m_FrameRGB->data, m_FrameRGB->linesize, m_Buffer, 
                          AV_PIX_FMT_RGB24, m_Width, m_Height, 1);
 
-    // Initialize SWS context for color conversion with HIGH QUALITY
+    // Initialize SWS context (Initial attempt, might fail for HW formats like D3D11)
+    // This is fine, as DecodeNextFrame will fix it dynamically using sws_getCachedContext
     m_SwsContext = sws_getContext(
         m_Width, m_Height, m_CodecContext->pix_fmt,
         m_Width, m_Height, AV_PIX_FMT_RGB24,
-        SWS_LANCZOS | SWS_ACCURATE_RND,  // High quality scaling - sharp & artifact-free
-        nullptr, nullptr, nullptr
+        SWS_FAST_BILINEAR, nullptr, nullptr, nullptr
     );
-
+    
+    // Warn but do NOT fail here. DecodeNextFrame handles the real SWS creation.
     if (!m_SwsContext) {
-        std::cerr << "Could not initialize SWS context" << std::endl;
-        Cleanup();
-        return false;
+        std::cout << "[VideoPlayer] Note: Initial sws_getContext failed (likely HW format). Will retry in DecodeNextFrame." << std::endl;
     }
 
     m_IsLoaded = true;
@@ -208,12 +199,40 @@ bool VideoPlayer::DecodeNextFrame() {
             // Receive decoded frame
             ret = avcodec_receive_frame(m_CodecContext, m_Frame);
             if (ret == 0) {
-                // Convert frame to RGB
-                sws_scale(
+                
+                // Handle Hardware Frame (D3D11/DXVA2)
+                AVFrame* finalFrame = m_Frame;
+                AVFrame* swFrame = nullptr;
+                
+                if (m_Frame->format == AV_PIX_FMT_D3D11 || m_Frame->format == AV_PIX_FMT_DXVA2_VLD) {
+                     swFrame = av_frame_alloc();
+                     if (av_hwframe_transfer_data(swFrame, m_Frame, 0) < 0) {
+                         std::cerr << "Error transferring HW frame to CPU" << std::endl;
+                         av_frame_free(&swFrame);
+                         av_packet_unref(m_Packet);
+                         return false;
+                     }
+                     finalFrame = swFrame;
+                }
+
+                // Dynamic Re-init of SWS Context if format changes (Critical for HW Accel which changes from D3D11 to NV12)
+                m_SwsContext = sws_getCachedContext(
                     m_SwsContext,
-                    m_Frame->data, m_Frame->linesize, 0, m_Height,
-                    m_FrameRGB->data, m_FrameRGB->linesize
+                    m_Width, m_Height, (AVPixelFormat)finalFrame->format,
+                    m_Width, m_Height, AV_PIX_FMT_RGB24,
+                    SWS_FAST_BILINEAR, nullptr, nullptr, nullptr
                 );
+                
+                // Convert frame to RGB
+                if (m_SwsContext) {
+                    sws_scale(
+                        m_SwsContext,
+                        finalFrame->data, finalFrame->linesize, 0, m_Height,
+                        m_FrameRGB->data, m_FrameRGB->linesize
+                    );
+                }
+                
+                if (swFrame) av_frame_free(&swFrame);
 
                 // Update current time
                 m_CurrentTime = m_Frame->pts * av_q2d(m_FormatContext->streams[m_VideoStreamIndex]->time_base);
@@ -338,6 +357,11 @@ void VideoPlayer::Cleanup() {
 
     if (m_CodecContext) {
         avcodec_free_context(&m_CodecContext);
+    }
+    
+    if (m_HardwareDeviceContext) {
+        av_buffer_unref(&m_HardwareDeviceContext);
+        m_HardwareDeviceContext = nullptr;
     }
 
     if (m_FormatContext) {

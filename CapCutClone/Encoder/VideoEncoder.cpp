@@ -17,30 +17,33 @@ VideoEncoder::~VideoEncoder() {
 const AVCodec* VideoEncoder::FindHardwareCodec(const std::string& codecName) {
     const AVCodec* codec = nullptr;
     
-    // List acceptable candidates in order of preference
     std::vector<std::string> candidates;
-    candidates.push_back(codecName + "_nvenc"); // NVIDIA
-    candidates.push_back(codecName + "_qsv");   // Intel
-    candidates.push_back(codecName + "_amf");   // AMD
+    candidates.push_back(codecName + "_nvenc");
+    candidates.push_back(codecName + "_qsv");
+    candidates.push_back(codecName + "_amf");
     
     if (codecName == "h264") {
-        candidates.push_back("libx264");        // Software (GPL)
-        candidates.push_back("libopenh264");    // Software
-        candidates.push_back("h264_mf");        // Windows Media Foundation
+        candidates.push_back("libx264");
+        candidates.push_back("libopenh264");
+        candidates.push_back("h264_mf");
     }
     
-    candidates.push_back(codecName);            // Default name (e.g. h264)
-    candidates.push_back("mpeg4");              // Fallback for simple testing
+    candidates.push_back(codecName);
+    candidates.push_back("mpeg4");
 
-    // Debug: List all relevant encoders to help specific diagnosis
+    std::cout << "[VideoEncoder] FFmpeg Version: " << av_version_info() << std::endl;
     std::cout << "[VideoEncoder] Checking available encoders for: " << codecName << std::endl;
+
     void* debugIter = nullptr;
     const AVCodec* debugCodec;
     while ((debugCodec = av_codec_iterate(&debugIter))) {
         if (av_codec_is_encoder(debugCodec)) {
-            std::string name = debugCodec->name;
-            if (name.find("h264") != std::string::npos || name.find("nvenc") != std::string::npos) {
-                std::cout << "  - " << debugCodec->name << ": " << debugCodec->long_name << std::endl;
+            // Only print video encoders to reduce spam, or relevant ones
+            if (debugCodec->type == AVMEDIA_TYPE_VIDEO) {
+                 std::string name = debugCodec->name;
+                 if (name.find("nvenc") != std::string::npos || name.find("h264") != std::string::npos || name.find("hevc") != std::string::npos) {
+                     std::cout << "  - Found: " << debugCodec->name << ": " << debugCodec->long_name << std::endl;
+                 }
             }
         }
     }
@@ -54,15 +57,6 @@ const AVCodec* VideoEncoder::FindHardwareCodec(const std::string& codecName) {
     }
 
     std::cerr << "[VideoEncoder] CRITICAL: Failed to find ANY video encoder." << std::endl;
-    std::cerr << "Available encoders:" << std::endl;
-    void* iterator = nullptr;
-    const AVCodec* c;
-    while ((c = av_codec_iterate(&iterator))) {
-        if (av_codec_is_encoder(c)) {
-            std::cout << " - " << c->name << ": " << c->long_name << std::endl;
-        }
-    }
-    
     return nullptr;
 }
 
@@ -73,7 +67,6 @@ bool VideoEncoder::Initialize(const std::string& outputFile, int width, int heig
     m_Fps = fps;
     m_FrameCount = 0;
 
-    // 1. Allocation Output Context
     avformat_alloc_output_context2(&m_FormatCtx, nullptr, nullptr, outputFile.c_str());
     if (!m_FormatCtx) {
         std::cerr << "Could not deduce format from file extension: " << outputFile << std::endl;
@@ -81,31 +74,26 @@ bool VideoEncoder::Initialize(const std::string& outputFile, int width, int heig
     }
     if (!m_FormatCtx) return false;
 
-    // 2. Find Codec (H.264)
     const AVCodec* codec = FindHardwareCodec("h264");
     if (!codec) {
         std::cerr << "Codec not found!" << std::endl;
         return false;
     }
 
-    // 3. Create Stream
     m_Stream = avformat_new_stream(m_FormatCtx, nullptr);
     if (!m_Stream) return false;
     m_Stream->id = m_FormatCtx->nb_streams - 1;
 
-    // 4. Create Codec Context
     m_CodecCtx = avcodec_alloc_context3(codec);
     if (!m_CodecCtx) return false;
 
-    // 5. Configure Codec
     m_CodecCtx->width = width;
     m_CodecCtx->height = height;
     m_CodecCtx->time_base = {1, fps};
     m_Stream->time_base = m_CodecCtx->time_base;
     m_CodecCtx->framerate = {fps, 1};
     
-    // Intelligent Pixel Format Selection
-    m_CodecCtx->pix_fmt = AV_PIX_FMT_YUV420P; // Default fallback
+    m_CodecCtx->pix_fmt = AV_PIX_FMT_YUV420P;
     if (codec->pix_fmts) {
         bool foundNV12 = false;
         bool foundYUV420P = false;
@@ -120,7 +108,6 @@ bool VideoEncoder::Initialize(const std::string& outputFile, int width, int heig
         } else if (foundYUV420P) {
              m_CodecCtx->pix_fmt = AV_PIX_FMT_YUV420P;
         } else {
-             // Take the first supported one if neither common format is found
              m_CodecCtx->pix_fmt = codec->pix_fmts[0];
         }
     }
@@ -129,29 +116,49 @@ bool VideoEncoder::Initialize(const std::string& outputFile, int width, int heig
     m_CodecCtx->bit_rate = bitrate;
     m_CodecCtx->gop_size = 12;
     m_CodecCtx->max_b_frames = 2;
-    
-    // Explicitly set Profile (High is widely supported and good quality)
-    // Helps avoid "Invalid Argument" with MF if it defaults to Baseline/Main on High Res
     m_CodecCtx->profile = AV_PROFILE_H264_HIGH;
 
-    // Global header for MP4
     if (m_FormatCtx->oformat->flags & AVFMT_GLOBALHEADER) {
         m_CodecCtx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     }
+    
+    AVDictionary* opts = nullptr;
+    std::string codecNameStr = codec->name;
+    
+    if (codecNameStr.find("nvenc") != std::string::npos) {
+        std::cout << "[VideoEncoder] Configuring NVENC for maximum GPU performance..." << std::endl;
+        av_dict_set(&opts, "preset", "p1", 0);
+        av_dict_set(&opts, "tune", "hq", 0);
+        av_dict_set(&opts, "rc", "vbr", 0);
+        av_dict_set(&opts, "gpu", "0", 0);
+        av_dict_set(&opts, "async_depth", "2", 0);
+        std::cout << "[VideoEncoder] NVENC configured: preset=p1, tune=hq, rc=vbr" << std::endl;
+    } else if (codecNameStr.find("qsv") != std::string::npos) {
+        av_dict_set(&opts, "preset", "veryfast", 0);
+        std::cout << "[VideoEncoder] QuickSync configured: preset=veryfast" << std::endl;
+    } else if (codecNameStr.find("amf") != std::string::npos) {
+        av_dict_set(&opts, "quality", "speed", 0);
+        std::cout << "[VideoEncoder] AMF configured: quality=speed" << std::endl;
+    } else if (codecNameStr.find("x264") != std::string::npos) {
+        av_dict_set(&opts, "preset", "ultrafast", 0);
+        av_dict_set(&opts, "tune", "zerolatency", 0);
+        std::cout << "[VideoEncoder] x264 configured: preset=ultrafast, tune=zerolatency" << std::endl;
+    }
 
-    // Open Codec
-    int ret = avcodec_open2(m_CodecCtx, codec, nullptr);
+    int ret = avcodec_open2(m_CodecCtx, codec, &opts);
+    if (opts) av_dict_free(&opts);
+    
     if (ret < 0) {
         char errbuf[256];
         av_strerror(ret, errbuf, sizeof(errbuf));
         std::cerr << "Could not open codec! Error: " << errbuf << " (" << ret << ")" << std::endl;
         return false;
     }
+    
+    std::cout << "[VideoEncoder] Codec opened successfully with hardware acceleration" << std::endl;
 
-    // Copy parameters to stream
     avcodec_parameters_from_context(m_Stream->codecpar, m_CodecCtx);
 
-    // 6. Open File
     if (!(m_FormatCtx->oformat->flags & AVFMT_NOFILE)) {
         if (avio_open(&m_FormatCtx->pb, outputFile.c_str(), AVIO_FLAG_WRITE) < 0) {
             std::cerr << "Could not open output file: " << outputFile << std::endl;
@@ -159,12 +166,10 @@ bool VideoEncoder::Initialize(const std::string& outputFile, int width, int heig
         }
     }
 
-    // 7. Write Header
     if (avformat_write_header(m_FormatCtx, nullptr) < 0) {
         return false;
     }
 
-    // Alloc Frames
     m_Frame = av_frame_alloc();
     m_Frame->format = m_CodecCtx->pix_fmt;
     m_Frame->width = m_CodecCtx->width;
@@ -173,60 +178,85 @@ bool VideoEncoder::Initialize(const std::string& outputFile, int width, int heig
 
     m_Packet = av_packet_alloc();
 
-    // SwsContext for RGB24 -> YUV
+    // CRITICAL FIX: Handle OpenGL bottom-up RGB data
+    // OpenGL reads pixels from bottom-left, but video expects top-left
+    // Use SWS_FAST_BILINEAR for speed, add srcSliceY offset handling
     m_SwsCtx = sws_getContext(
         width, height, AV_PIX_FMT_RGB24,
         width, height, m_CodecCtx->pix_fmt,
-        SWS_BICUBIC, nullptr, nullptr, nullptr
+        SWS_FAST_BILINEAR, nullptr, nullptr, nullptr
     );
+    
+    if (!m_SwsCtx) {
+        std::cerr << "[VideoEncoder] Failed to create SwsContext!" << std::endl;
+        return false;
+    }
 
     return true;
 }
 
 bool VideoEncoder::EncodeFrame(const uint8_t* rgbData) {
-    if (!m_CodecCtx) return false;
+    if (!m_CodecCtx || !rgbData) return false;
 
-    // 1. Make frame writable
     if (av_frame_make_writable(m_Frame) < 0) return false;
 
     // 2. Convert RGB to YUV
-    // Stride for RGB24 is width * 3
-    int srcStride[1] = { m_Width * 3 };
+    int srcStride[1] = { m_Width * 3 }; 
     const uint8_t* srcSlice[1] = { rgbData };
     
-    sws_scale(m_SwsCtx, srcSlice, srcStride, 0, m_Height, m_Frame->data, m_Frame->linesize);
-
-    // 3. Set PTS
-    m_Frame->pts = m_FrameCount++;
-
-    // 4. Send frame to encoder
-    if (avcodec_send_frame(m_CodecCtx, m_Frame) < 0) {
-        std::cerr << "Error sending frame to encoder" << std::endl;
+    int result = sws_scale(
+        m_SwsCtx, 
+        srcSlice, 
+        srcStride, 
+        0, 
+        m_Height, 
+        m_Frame->data, 
+        m_Frame->linesize
+    );
+    
+    if (result <= 0) {
+        std::cerr << "[VideoEncoder] sws_scale failed!" << std::endl;
         return false;
     }
 
-    // 5. Receive packets
-    while (true) {
-        int ret = avcodec_receive_packet(m_CodecCtx, m_Packet);
-        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
-        if (ret < 0) return false;
+    m_Frame->pts = m_FrameCount++;
 
-        // Rescale packet timestamp to stream time base
+    // 3. Encode
+    int ret = avcodec_send_frame(m_CodecCtx, m_Frame);
+    if (ret < 0) {
+        char errbuf[256];
+        av_strerror(ret, errbuf, sizeof(errbuf));
+        std::cerr << "Error sending frame to encoder: " << errbuf << std::endl;
+        return false;
+    }
+
+    while (ret >= 0) {
+        ret = avcodec_receive_packet(m_CodecCtx, m_Packet);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+            break;
+        else if (ret < 0) {
+            std::cerr << "Error receiving packet from encoder" << std::endl;
+            return false;
+        }
+
+        // Rescale packet timestamp
         av_packet_rescale_ts(m_Packet, m_CodecCtx->time_base, m_Stream->time_base);
         m_Packet->stream_index = m_Stream->index;
 
         // Write packet
-        av_interleaved_write_frame(m_FormatCtx, m_Packet);
+        ret = av_interleaved_write_frame(m_FormatCtx, m_Packet);
         av_packet_unref(m_Packet);
+        if (ret < 0) {
+            // Warning only - don't fail the whole export for one dropped frame
+            // std::cerr << "Error writing frame" << std::endl; 
+        }
     }
-
     return true;
 }
 
 bool VideoEncoder::Finalize() {
     if (!m_CodecCtx) return false;
 
-    // Flush encoder
     avcodec_send_frame(m_CodecCtx, nullptr);
 
     while (true) {

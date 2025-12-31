@@ -50,14 +50,23 @@ target_link_libraries(CapCutClone PRIVATE
     glad::glad
     OpenGL::GL
     imgui::imgui
-    avformat.lib
-    avcodec.lib
-    swscale.lib
-    avutil.lib
 )
 
-# Add FFmpeg library directories if needed
-if(FFMPEG_LIBRARY_DIRS)
-    target_link_directories(CapCutClone PRIVATE ${FFMPEG_LIBRARY_DIRS})
+# Link FFmpeg libraries
+if(unofficial-ffmpeg_FOUND)
+    target_link_libraries(CapCutClone PRIVATE ${FFMPEG_LIBRARIES})
+else()
+    # Add FFmpeg library directories if needed
+    if(FFMPEG_LIBRARY_DIRS)
+        target_link_directories(CapCutClone PRIVATE ${FFMPEG_LIBRARY_DIRS})
+    endif()
+    # Link FFmpeg libraries in correct dependency order
+    # avutil must come last as other libraries depend on it
+    target_link_libraries(CapCutClone PRIVATE 
+        avformat
+        avcodec
+        swscale
+        avutil
+        avutil  # Link twice to resolve circular dependencies
+    )
 endif()
-
