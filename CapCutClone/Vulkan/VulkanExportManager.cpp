@@ -105,6 +105,12 @@ void VulkanExportManager::Cleanup() {
   if (!m_VulkanContext)
     return;
 
+  // Wait for any pending GPU work before cleanup
+  if (m_TransferFence) {
+    VkDevice device = m_VulkanContext->GetDevice();
+    vkWaitForFences(device, 1, &m_TransferFence, VK_TRUE, UINT64_MAX);
+  }
+
   DestroyVulkanResources();
   m_ComputePipeline.reset();
   m_VulkanContext.reset();
@@ -488,6 +494,17 @@ bool VulkanExportManager::CreateCommandPool() {
     return false;
   }
 
+  // Create fence for async synchronization
+  VkFenceCreateInfo fenceInfo{};
+  fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+  fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT; // Start signaled
+
+  if (vkCreateFence(device, &fenceInfo, nullptr, &m_TransferFence) !=
+      VK_SUCCESS) {
+    std::cerr << "[VulkanExportManager] Failed to create fence" << std::endl;
+    return false;
+  }
+
   return true;
 }
 
@@ -514,7 +531,7 @@ void VulkanExportManager::EndSingleTimeCommands(VkCommandBuffer commandBuffer) {
 
   VkQueue computeQueue = m_VulkanContext->GetComputeQueue();
   vkQueueSubmit(computeQueue, 1, &submitInfo, VK_NULL_HANDLE);
-  vkQueueWaitIdle(computeQueue);
+  vkQueueWaitIdle(computeQueue); // Simple blocking - stable and works
 }
 
 void VulkanExportManager::TransitionImageLayout(VkImage image, VkFormat format,

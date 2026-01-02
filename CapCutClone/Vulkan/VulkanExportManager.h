@@ -14,6 +14,7 @@ typedef struct VkDeviceMemory_T *VkDeviceMemory;
 typedef struct VkBuffer_T *VkBuffer;
 typedef struct VkCommandPool_T *VkCommandPool;
 typedef struct VkCommandBuffer_T *VkCommandBuffer;
+typedef struct VkFence_T *VkFence;
 typedef enum VkFormat VkFormat;
 typedef enum VkImageLayout VkImageLayout;
 
@@ -67,6 +68,7 @@ private:
   // Command pool and buffer for transfer operations
   VkCommandPool m_CommandPool = nullptr;
   VkCommandBuffer m_CommandBuffer = nullptr;
+  VkFence m_TransferFence = nullptr; // For async synchronization
 
   // Dimensions
   int m_Width = 0;
