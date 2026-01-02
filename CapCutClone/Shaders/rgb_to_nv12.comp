@@ -1,0 +1,55 @@
+#version 430 core
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0) uniform sampler2D inputRGB;
+layout(r8, binding = 1) uniform writeonly image2D outputY;
+layout(rg8, binding = 2) uniform writeonly image2D outputUV;
+
+// RGB to YUV conversion matrix (BT.709 for HD content)
+// Y  = 0.2126*R + 0.7152*G + 0.0722*B
+// U  = -0.1146*R - 0.3854*G + 0.5*B + 0.5
+// V  = 0.5*R - 0.4542*G - 0.0458*B + 0.5
+const mat3 rgb2yuv = mat3(
+    0.2126, 0.7152, 0.0722,      // Y
+    -0.1146, -0.3854, 0.5,       // U
+    0.5, -0.4542, -0.0458        // V
+);
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outputY);
+    
+    if (pos.x >= size.x || pos.y >= size.y)
+        return;
+    
+    // Read RGB pixel from texture
+    vec2 texCoord = (vec2(pos) + 0.5) / vec2(size);
+    vec3 rgb = texture(inputRGB, texCoord).rgb;
+    
+    // Convert to YUV
+    vec3 yuv = rgb2yuv * rgb;
+    yuv += vec3(0.0, 0.5, 0.5); // Add offsets for U and V
+    
+    // Write Y plane (full resolution)
+    imageStore(outputY, pos, vec4(yuv.x));
+    
+    // Write UV plane (half resolution for NV12 format)
+    // Only write every other pixel in both dimensions
+    if ((pos.x & 1) == 0 && (pos.y & 1) == 0) {
+        ivec2 uvPos = pos / 2;
+        
+        // For NV12, we need to average 2x2 block for chroma
+        vec3 yuv00 = rgb2yuv * texture(inputRGB, (vec2(pos) + 0.5) / vec2(size)).rgb + vec3(0.0, 0.5, 0.5);
+        vec3 yuv10 = rgb2yuv * texture(inputRGB, (vec2(pos + ivec2(1, 0)) + 0.5) / vec2(size)).rgb + vec3(0.0, 0.5, 0.5);
+        vec3 yuv01 = rgb2yuv * texture(inputRGB, (vec2(pos + ivec2(0, 1)) + 0.5) / vec2(size)).rgb + vec3(0.0, 0.5, 0.5);
+        vec3 yuv11 = rgb2yuv * texture(inputRGB, (vec2(pos + ivec2(1, 1)) + 0.5) / vec2(size)).rgb + vec3(0.0, 0.5, 0.5);
+        
+        // Average chroma from 2x2 block
+        float u = (yuv00.y + yuv10.y + yuv01.y + yuv11.y) * 0.25;
+        float v = (yuv00.z + yuv10.z + yuv01.z + yuv11.z) * 0.25;
+        
+        // NV12 format: interleaved UV (U, V, U, V, ...)
+        imageStore(outputUV, uvPos, vec4(u, v, 0.0, 0.0));
+    }
+}
